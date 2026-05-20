@@ -38,6 +38,9 @@ class RobotAdapter:
         self.posicao_atual_tcp = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
         self.lista_pontos = []
         self.executando_trajetoria = False
+        self.trajetoria_em_erro = False
+        self.trajetoria_erros = []
+        self._erro_joystick_stop_emitido = False
         self.saida_digital_ativa = False
         self.angulo_operador = 0.0
         self.grupo_ativo = None
@@ -93,6 +96,31 @@ class RobotAdapter:
         if self.on_execution_status:
             self.on_execution_status({"message": message, "status": status})
 
+    def definir_erro_trajetoria(self, errors) -> None:
+        """Bloqueia movimento manual por joystick até reconhecimento do operador."""
+        if isinstance(errors, str):
+            errors = [errors]
+        errors = [str(e) for e in (errors or ["Erro de trajetória não especificado."])]
+        with self._state_lock:
+            self.trajetoria_em_erro = True
+            self.trajetoria_erros = errors
+            self.diagnosticos["trajetoria_em_erro"] = True
+            self.diagnosticos["trajetoria_erros"] = list(errors)
+        self.parar_grupo([0, 1, 2, 3, 4, 5])
+        self._erro_joystick_stop_emitido = False
+
+    def limpar_erro_trajetoria(self) -> None:
+        with self._state_lock:
+            self.trajetoria_em_erro = False
+            self.trajetoria_erros = []
+            self.diagnosticos["trajetoria_em_erro"] = False
+            self.diagnosticos["trajetoria_erros"] = []
+        self._erro_joystick_stop_emitido = False
+
+    def obter_erros_trajetoria(self):
+        with self._state_lock:
+            return list(self.trajetoria_erros)
+
     def snapshot_state(self) -> Dict[str, Any]:
         return {
             "tcp": self._copy_tcp(),
@@ -100,6 +128,8 @@ class RobotAdapter:
             "modo_sim": self.modo_simulacao,
             "angulo_operador": math.degrees(self.angulo_operador),
             "diagnosticos": copy.deepcopy(self.diagnosticos),
+            "trajetoria_em_erro": self.trajetoria_em_erro,
+            "trajetoria_erros": list(self.trajetoria_erros),
         }
 
     # ------------------------------------------------------------------
@@ -353,6 +383,7 @@ class RobotAdapter:
             pontos = self._get_pontos_snapshot()
             plan = TrajectoryPlanner.plan(pontos)
             if not plan.ok:
+                self.definir_erro_trajetoria(plan.errors)
                 msg = plan.message
                 self._emit_exec_status(msg, "error")
                 return msg
@@ -429,6 +460,20 @@ class RobotAdapter:
             self.last_sent_vels[eixo] = 0.0
 
     def _processar_joystick(self, joy):
+        # Se houve erro de trajetória em uma tentativa de execução, o joystick fica
+        # bloqueado até o operador reconhecer o modal na IHM. Isso evita que o robô
+        # continue sendo movimentado em um estado operacional ambíguo.
+        if self.trajetoria_em_erro:
+            self.parar_grupo([0, 1, 2, 3, 4, 5])
+            self.grupo_ativo = None
+            # Atualiza estados de borda para não disparar comandos atrasados no OK.
+            for b in (4, 5, 6, 7, 8, 15):
+                try:
+                    self.last_btns[b] = joy.get_button(b)
+                except Exception:
+                    pass
+            return
+
         b7 = joy.get_button(7)
         if b7 == 1 and self.last_btns[7] == 0:
             self.angulo_operador -= math.pi / 2
@@ -526,8 +571,14 @@ class RobotAdapter:
         tipo = str(tipo).upper()
         if tipo not in ("L", "C"):
             return False
+        pose = self._copy_tcp()
+        # Ponto SEMPRE absoluto e completo: [x,y,z,rx,ry,rz].
+        # Não reduzir para XY e não transformar em relativo.
+        pose = [float(v) for v in pose[:6]]
         with self._state_lock:
-            self.lista_pontos.append((tipo, self._copy_tcp()))
+            self.lista_pontos.append((tipo, pose))
+            idx = len(self.lista_pontos)
+        print(f"[PONTO] #{idx} {tipo} ABS {pose}")
         self._emit_pontos()
         return True
 

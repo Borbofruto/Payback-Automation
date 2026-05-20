@@ -1,5 +1,5 @@
 # app.py
-# Backend Flask/Socket.IO — IHM Solda Payback — V13 refatorada.
+# Backend Flask/Socket.IO — IHM Solda Payback — V15 absoluto + modal de erro.
 # HTML fica na raiz do projeto.
 
 import eventlet
@@ -98,12 +98,18 @@ def executar_trajetoria():
 
     plan = adapter.validar_trajetoria_atual()
     if not plan.ok:
-        return jsonify({
-            'status': 'error',
+        # Erro de validação em tentativa de execução é estado bloqueante:
+        # o joystick fica ignorado até o operador reconhecer o modal na IHM.
+        adapter.definir_erro_trajetoria(plan.errors)
+        payload = {
+            'status': 'trajectory_error',
             'message': plan.message,
             'errors': plan.errors,
             'plan': plan.to_dict(),
-        }), 400
+        }
+        socketio.emit('trajectory_error', payload)
+        socketio.emit('execucao_status', {'message': plan.message, 'status': 'error'})
+        return jsonify(payload), 400
 
     eventlet.spawn(gerenciar_execucao_segura)
     eventlet.sleep(0.01)
@@ -129,6 +135,13 @@ def adicionar_ponto_manual():
     return jsonify({'status': 'success', 'message': f'Ponto {tipo} adicionado.', 'plan': plan.to_dict()})
 
 
+
+@app.route('/api/trajetoria/erro/ack', methods=['POST'])
+def ack_erro_trajetoria():
+    adapter.limpar_erro_trajetoria()
+    socketio.emit('execucao_status', {'message': 'Erro de trajetória reconhecido. Controle liberado.', 'status': 'info'})
+    return jsonify({'status': 'success', 'message': 'Erro reconhecido. Controle liberado.'})
+
 @app.route('/api/debug/telemetria', methods=['GET'])
 def debug_telemetria():
     return jsonify(adapter.get_telemetry_debug())
@@ -153,6 +166,12 @@ adapter.on_execution_status = lambda dados: socketio.emit('execucao_status', dad
 def on_connect():
     socketio.emit('atualizar_pontos', {'pontos': adapter._get_pontos_snapshot()})
     socketio.emit('atualizar_estado', adapter.snapshot_state())
+    if getattr(adapter, 'trajetoria_em_erro', False):
+        socketio.emit('trajectory_error', {
+            'status': 'trajectory_error',
+            'message': 'Erro de trajetória pendente.',
+            'errors': adapter.obter_erros_trajetoria(),
+        })
     socketio.emit('execucao_status', {'message': 'Backend conectado à IHM.', 'status': 'info'})
 
 
