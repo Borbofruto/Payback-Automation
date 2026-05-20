@@ -7,7 +7,7 @@ import eventlet
 eventlet.monkey_patch()
 
 from eventlet import tpool
-from flask import Flask, jsonify, render_template, request
+from flask import Flask, jsonify, request, send_file
 from flask_socketio import SocketIO
 
 from robot_adapter import adapter
@@ -19,7 +19,23 @@ socketio = SocketIO(app, cors_allowed_origins='*', async_mode='eventlet')
 
 @app.route('/')
 def index():
-    return render_template('index.html')
+    # Aceita o HTML tanto na raiz quanto em /templates e tolera Index.html maiúsculo.
+    # Isso evita TemplateNotFound por diferença de maiúscula/minúscula ou pasta.
+    from pathlib import Path
+    base = Path(__file__).resolve().parent
+    candidates = [
+        base / 'index.html',
+        base / 'Index.html',
+        base / 'templates' / 'index.html',
+        base / 'templates' / 'Index.html',
+    ]
+    for candidate in candidates:
+        if candidate.exists():
+            return send_file(str(candidate))
+    return (
+        'index.html não encontrado. Coloque o arquivo como index.html na raiz ou em templates/Index.html.',
+        500,
+    )
 
 
 @app.route('/api/config/velocidades', methods=['POST'])
