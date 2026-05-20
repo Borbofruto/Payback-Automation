@@ -111,13 +111,16 @@ canvas{width:100%;height:100%;display:block;background:#fff;position:relative;z-
 .slider-container{display:flex;align-items:center;gap:10px;}
 .slider-container input[type="range"]{flex:1;accent-color:var(--ac);height:6px;}
 .slider-container span{min-width:72px;text-align:right;font-weight:900;font-size:calc(12px * var(--fs));color:var(--nv);font-variant-numeric:tabular-nums;}
-.listbox-pontos{border:1px solid var(--bd);border-radius:var(--r6);height:190px;overflow-y:auto;background:var(--bg);}
-.ponto-item{padding:10px 12px;border-bottom:1px solid var(--bd);font-size:calc(12px * var(--fs));display:flex;justify-content:space-between;align-items:center;gap:8px;}
+.listbox-pontos{border:1px solid var(--bd);border-radius:var(--r6);height:245px;overflow-y:auto;background:var(--bg);}
+.ponto-item{padding:9px 10px;border-bottom:1px solid var(--bd);font-size:calc(11px * var(--fs));display:grid;grid-template-columns:1fr auto;align-items:start;gap:8px;}
 .ponto-item:last-child{border-bottom:none;}
 .ponto-empty{display:flex;align-items:center;justify-content:center;height:100%;color:var(--t3);font-size:calc(11px * var(--fs));font-weight:700;text-align:center;padding:14px;}
-.ponto-main{min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:var(--t2);}
+.ponto-main{min-width:0;color:var(--t2);line-height:1.35;}
 .ponto-main strong{color:var(--t1);}
-.ponto-tipo{padding:2px 7px;border-radius:var(--rp);font-weight:900;font-size:calc(10px * var(--fs));color:white;flex-shrink:0;}
+.pose-line{display:block;white-space:normal;overflow:visible;text-overflow:clip;}
+.pose-line.pos{font-weight:800;color:var(--t1);}
+.pose-line.rot{font-size:calc(10px * var(--fs));color:var(--mut);font-family:Consolas, monospace;}
+.ponto-tipo{padding:3px 7px;border-radius:var(--rp);font-weight:900;font-size:calc(10px * var(--fs));color:white;flex-shrink:0;}
 .ponto-tipo.L{background:var(--er);}
 .ponto-tipo.C{background:var(--wn);}
 .btn-row{display:grid;grid-template-columns:repeat(2,1fr);gap:8px;margin-top:8px;}
@@ -164,9 +167,36 @@ canvas{width:100%;height:100%;display:block;background:#fff;position:relative;z-
 ::-webkit-scrollbar-track{background:transparent;}
 ::-webkit-scrollbar-thumb{background:var(--bd);border-radius:4px;}
 @media(max-width:1400px){.side{width:390px}.hd{height:86px}.nav{width:180px}.art{padding:14px;gap:14px}.grid-coordenadas{gap:6px}.btn{padding:8px 12px}.ft{height:54px}}
+
+
+/* Modal crítico de erro de trajetória */
+.modal-erro-traj{position:fixed;inset:0;background:rgba(3,19,33,.72);z-index:20000;display:none;align-items:center;justify-content:center;padding:32px;backdrop-filter:blur(2px);}
+.modal-erro-traj.show{display:flex;}
+.modal-erro-card{width:min(720px,96vw);background:#fff;border:1px solid #F5C2C7;border-radius:18px;box-shadow:0 30px 80px rgba(0,0,0,.35);overflow:hidden;}
+.modal-erro-head{display:flex;align-items:center;gap:14px;padding:20px 24px;background:#FCEDEF;color:var(--err);border-bottom:1px solid #F5C2C7;}
+.modal-erro-head i{font-size:28px;}
+.modal-erro-head h2{margin:0;font-size:20px;letter-spacing:.04em;text-transform:uppercase;}
+.modal-erro-body{padding:22px 24px;color:var(--t1);}
+.modal-erro-body p{margin:0 0 14px 0;color:var(--t2);font-weight:700;line-height:1.45;}
+.modal-erro-list{margin:0;padding-left:22px;display:flex;flex-direction:column;gap:10px;font-weight:900;color:var(--err);line-height:1.35;}
+.modal-erro-foot{display:flex;justify-content:flex-end;gap:10px;padding:16px 24px;background:#F8FAFC;border-top:1px solid var(--bd);}
+.modal-erro-foot .btn{min-width:140px;}
+
 </style>
 </head>
 <body>
+
+<div id="modal-erro-trajetoria" class="modal-erro-traj" role="dialog" aria-modal="true" aria-labelledby="modal-erro-title">
+  <div class="modal-erro-card">
+    <div class="modal-erro-head"><i class="fa-solid fa-triangle-exclamation"></i><h2 id="modal-erro-title">Erro de trajetória</h2></div>
+    <div class="modal-erro-body">
+      <p>O movimento foi bloqueado antes de enviar comandos ao robô. O joystick fica bloqueado até o reconhecimento deste aviso.</p>
+      <ul id="modal-erro-list" class="modal-erro-list"><li>Erro não especificado.</li></ul>
+    </div>
+    <div class="modal-erro-foot"><button class="btn btn-p" onclick="reconhecerErroTrajetoria()"><i class="fa-solid fa-check"></i> Entendi</button></div>
+  </div>
+</div>
+
 <div class="hmi">
   <div class="demo-bar"><i class="fa-solid fa-eye"></i> Modo local — frontend rebrand em validação. Backend Flask/Socket.IO preservado para reconexão.</div>
   <header class="hd">
@@ -213,7 +243,7 @@ canvas{width:100%;height:100%;display:block;background:#fff;position:relative;z-
       <a onclick="toast('Parâmetros avançados entram depois da validação visual')"><i class="fa-solid fa-sliders"></i> Parâmetros</a>
       <a onclick="toast('Log operacional será conectado na etapa de backend')"><i class="fa-solid fa-scroll"></i> Log</a>
       <div class="nav-spacer"></div>
-      <div class="nav-foot">Módulo de solda<br>Versão conectada V2<br>Backend Python/Socket.IO</div>
+      <div class="nav-foot">Módulo de solda<br>Versão V18 · jog restaurado<br>Backend Python/Socket.IO</div>
     </nav>
 
     <main class="art">
@@ -221,8 +251,8 @@ canvas{width:100%;height:100%;display:block;background:#fff;position:relative;z-
         <div class="visual-main">
           <div class="visual-head">
             <h4><i class="fa-solid fa-crosshairs"></i> Trajetória programada</h4>
-            <span class="meta">canvas XY · pontos lineares/circulares · mira TCP</span>
-            <div class="right"><button class="btn btn-g btn-sm" onclick="desenharVisualizacao()"><i class="fa-solid fa-rotate"></i> Redesenhar</button></div>
+            <span class="meta">canvas XY · poses TCP absolutas [X,Y,Z,RX,RY,RZ] · mira TCP</span>
+            <div class="right"><button class="btn btn-g btn-sm" onclick="rotacionarVistaTrajetoria()"><i class="fa-solid fa-rotate-right"></i> Girar vista <span id="view-angle-label">0°</span></button><button class="btn btn-g btn-sm" onclick="desenharVisualizacao()"><i class="fa-solid fa-rotate"></i> Redesenhar</button></div>
           </div>
           <div class="canvas-wrapper"><canvas id="jakaCanvas"></canvas></div>
         </div>
@@ -258,6 +288,7 @@ canvas{width:100%;height:100%;display:block;background:#fff;position:relative;z-
             <div class="listbox-pontos" id="lista-pontos-container"><div class="ponto-empty">Nenhum ponto salvo.<br>Use o joystick ou adicione manualmente.</div></div>
             <div class="btn-row">
               <button class="btn btn-p" onclick="executarTrajetoria()"><i class="fas fa-play"></i> Rodar</button>
+              <button class="btn btn-g" onclick="removerUltimoPonto()"><i class="fas fa-delete-left"></i> Remover último</button>
               <button class="btn btn-d" onclick="limparTrajetoria()"><i class="fas fa-trash-can"></i> Limpar</button>
             </div>
             <div class="btn-row">
@@ -363,6 +394,7 @@ const ctx = canvas.getContext('2d');
 let escala = 0.4;
 let offset_x = 400;
 let offset_y = 320;
+let viewRot = 0; // 0,1,2,3 = 0°,90°,180°,270° no plano XY visual
 let telaAtual = 'trajetoria';
 let estadoLocal = { tcp: [0,0,0,0,0,0], pontos: [] };
 let recebeuTelemetriaReal = false;
@@ -421,6 +453,13 @@ if (socket) {
       atualizarDiagnosticosReais(dados.diagnosticos);
     }
 
+    if (dados.trajetoria_em_erro) {
+      const errs = Array.isArray(dados.trajetoria_erros) && dados.trajetoria_erros.length
+        ? dados.trajetoria_erros
+        : ['Erro de trajetória ativo. Reconheça o erro para liberar o controle.'];
+      mostrarErroTrajetoria(errs);
+    }
+
     if (telaAtual === 'trajetoria') desenharVisualizacao();
   });
 
@@ -433,6 +472,13 @@ if (socket) {
       atualizarDiagnosticosReais(dados.diagnosticos);
     }
 
+    if (dados.trajetoria_em_erro) {
+      const errs = Array.isArray(dados.trajetoria_erros) && dados.trajetoria_erros.length
+        ? dados.trajetoria_erros
+        : ['Erro de trajetória ativo. Reconheça o erro para liberar o controle.'];
+      mostrarErroTrajetoria(errs);
+    }
+
     if (telaAtual === 'trajetoria') desenharVisualizacao();
   });
 
@@ -440,6 +486,10 @@ if (socket) {
     if (!dados) return;
     atualizarStatusTrajetoria(dados.message || 'Status de execução atualizado.', dados.status || 'info');
     toast(dados.message || 'Status de execução atualizado.');
+  });
+
+  socket.on('trajectory_error', (dados) => {
+    mostrarErroTrajetoria((dados && dados.errors) || [dados?.message || 'Trajetória inválida.']);
   });
 }
 
@@ -479,6 +529,16 @@ function atualizarTcpNumerico(tcp) {
   });
 }
 
+function fmtPoseValue(v, digits=1) {
+  const n = Number(v);
+  return Number.isFinite(n) ? n.toFixed(digits) : '0.0';
+}
+
+function pose6(pose) {
+  const arr = Array.isArray(pose) ? pose : [];
+  return [0,1,2,3,4,5].map(i => Number(arr[i] ?? 0));
+}
+
 function renderizarListaPontos(pontos) {
   const container = document.getElementById('lista-pontos-container');
   container.innerHTML = '';
@@ -487,12 +547,17 @@ function renderizarListaPontos(pontos) {
     return;
   }
   pontos.forEach((p, idx) => {
-    const tipo = p[0] || 'L';
-    const pose = p[1] || [0,0,0,0,0,0];
+    const tipo = String(p?.[0] || 'L').toUpperCase();
+    const pose = pose6(p?.[1]);
     const item = document.createElement('div');
     item.className = 'ponto-item';
     const msg = tipo === 'L' ? 'Linear' : 'Circular';
-    item.innerHTML = `<span class="ponto-main"><strong>#${idx+1}</strong> — X: ${Number(pose[0]||0).toFixed(1)} · Y: ${Number(pose[1]||0).toFixed(1)}</span><span class="ponto-tipo ${tipo}">${msg}</span>`;
+    item.innerHTML = `
+      <span class="ponto-main">
+        <span class="pose-line pos"><strong>#${idx+1}</strong> ABS — X ${fmtPoseValue(pose[0],1)} · Y ${fmtPoseValue(pose[1],1)} · Z ${fmtPoseValue(pose[2],1)}</span>
+        <span class="pose-line rot">TCP rot: RX ${fmtPoseValue(pose[3],4)} · RY ${fmtPoseValue(pose[4],4)} · RZ ${fmtPoseValue(pose[5],4)} rad</span>
+      </span>
+      <span class="ponto-tipo ${tipo}">${msg}</span>`;
     container.appendChild(item);
   });
 }
@@ -511,8 +576,23 @@ function v3Normalize(a){
   const n = v3Norm(a);
   return n < 1e-9 ? [0,0,0] : [a[0]/n, a[1]/n, a[2]/n];
 }
+function rotateViewXY(x, y) {
+  // Rotaciona apenas a visualizacao do plano XY. Nao altera pose salva, TCP, nem backend.
+  const r = ((viewRot % 4) + 4) % 4;
+  if (r === 0) return [x, y];
+  if (r === 1) return [y, -x];      // 90° visual
+  if (r === 2) return [-x, -y];     // 180°
+  return [-y, x];                   // 270°
+}
 function projectPoseToCanvas(p) {
-  return { x: offset_x + (p[0] * escala), y: offset_y - (p[1] * escala) };
+  const [rx, ry] = rotateViewXY(Number(p?.[0] || 0), Number(p?.[1] || 0));
+  return { x: offset_x + (rx * escala), y: offset_y - (ry * escala) };
+}
+function rotacionarVistaTrajetoria() {
+  viewRot = (viewRot + 1) % 4;
+  const el = document.getElementById('view-angle-label');
+  if (el) el.innerText = (viewRot * 90) + '°';
+  desenharVisualizacao();
 }
 function normAngle(a) {
   const t = Math.PI * 2;
@@ -595,6 +675,28 @@ function drawJakaMoveCArc(startPose, midPose, endPose) {
   drawPolyline(out);
 }
 
+function desenharMarcadorPose(pose, label, cor='#28323D', r=5) {
+  const p = projectPoseToCanvas(v3FromPose(pose));
+  ctx.fillStyle = cor;
+  ctx.beginPath();
+  ctx.arc(p.x, p.y, r, 0, 2*Math.PI);
+  ctx.fill();
+  ctx.font = '10px Segoe UI';
+  ctx.fillStyle = '#28323D';
+  if (label) ctx.fillText(label, p.x + 10, p.y - 10);
+}
+
+function desenharLinhaPose(a, b, cor='#CC3340', largura=3) {
+  const p0 = projectPoseToCanvas(v3FromPose(a));
+  const p1 = projectPoseToCanvas(v3FromPose(b));
+  ctx.strokeStyle = cor;
+  ctx.lineWidth = largura;
+  ctx.beginPath();
+  ctx.moveTo(p0.x, p0.y);
+  ctx.lineTo(p1.x, p1.y);
+  ctx.stroke();
+}
+
 function desenharVisualizacao() {
   if (!ctx || !canvas) return;
   const rect = canvas.getBoundingClientRect();
@@ -602,13 +704,11 @@ function desenharVisualizacao() {
   const h = rect.height || 520;
   ctx.clearRect(0,0,w,h);
 
-  // Grade industrial sutil
   ctx.strokeStyle = '#EEF3F8';
   ctx.lineWidth = 1;
   for (let x = 0; x < w; x += 40) { ctx.beginPath(); ctx.moveTo(x,0); ctx.lineTo(x,h); ctx.stroke(); }
   for (let y = 0; y < h; y += 40) { ctx.beginPath(); ctx.moveTo(0,y); ctx.lineTo(w,y); ctx.stroke(); }
 
-  // Eixos de referência discretos
   ctx.strokeStyle = '#DDE4EC';
   ctx.lineWidth = 1.5;
   ctx.beginPath(); ctx.moveTo(0, offset_y); ctx.lineTo(w, offset_y); ctx.stroke();
@@ -616,71 +716,68 @@ function desenharVisualizacao() {
 
   const pts = estadoLocal.pontos || [];
   if (pts.length > 0) {
-    let i = 0;
-    while (i < pts.length) {
-      let tipo = pts[i][0];
-      let p_atual = pts[i][1];
-      if (i === 0) {
-        let cx = offset_x + (p_atual[0] * escala);
-        let cy = offset_y - (p_atual[1] * escala);
-        ctx.fillStyle = '#003865';
-        ctx.beginPath(); ctx.arc(cx, cy, 6, 0, 2*Math.PI); ctx.fill();
-        ctx.font = 'bold 11px Segoe UI';
-        ctx.fillStyle = '#28323D';
-        ctx.fillText('P1 (Início)', cx + 10, cy - 10);
-        i++;
-        continue;
-      }
-      let p_anterior = pts[i-1][1];
-      let x0 = offset_x + (p_anterior[0] * escala);
-      let y0 = offset_y - (p_anterior[1] * escala);
-      if (tipo === 'C' && (i + 1) < pts.length && pts[i+1][0] === 'C') {
-        let p_meio = p_atual;
-        let p_fim = pts[i+1][1];
-        let x1 = offset_x + (p_meio[0] * escala);
-        let y1 = offset_y - (p_meio[1] * escala);
-        let x2 = offset_x + (p_fim[0] * escala);
-        let y2 = offset_y - (p_fim[1] * escala);
+    // A visualização segue a mesma semântica do backend:
+    // - Ponto #1 é consumido pela entrada.
+    // - L gera MoveL até a pose absoluta.
+    // - C exige grupo C,C,C: início, passagem e fim.
+    // - Se o arco aparece no meio, desenha primeiro MoveL até o C inicial.
+    let currentPose = pose6(pts[0]?.[1]);
+    desenharMarcadorPose(currentPose, 'P1 (entrada)', '#003865', 6);
+
+    let i = 1;
+    if (String(pts[0]?.[0] || '').toUpperCase() === 'C') {
+      if (pts.length >= 3 && String(pts[1]?.[0] || '').toUpperCase() === 'C' && String(pts[2]?.[0] || '').toUpperCase() === 'C') {
         ctx.strokeStyle = '#E0A100';
         ctx.lineWidth = 3;
+        drawJakaMoveCArc(pose6(pts[0][1]), pose6(pts[1][1]), pose6(pts[2][1]));
+        desenharMarcadorPose(pose6(pts[1][1]), 'C2', '#E0A100', 5);
+        desenharMarcadorPose(pose6(pts[2][1]), 'C3', '#E0A100', 5);
+        currentPose = pose6(pts[2][1]);
+        i = 3;
+      }
+    }
 
-        // MoveC JAKA: arco circular definido pelo ponto inicial atual, ponto de passagem e ponto final.
-        // Desenhamos a circunferencia 3D e projetamos em XY para bater melhor com a trajetoria real do TCP.
-        drawJakaMoveCArc(p_anterior, p_meio, p_fim);
-
-        // Marcadores dos pontos reais salvos.
-        ctx.fillStyle = '#E0A100';
-        ctx.beginPath(); ctx.arc(x1, y1, 5, 0, 2*Math.PI); ctx.fill();
-        ctx.beginPath(); ctx.arc(x2, y2, 5, 0, 2*Math.PI); ctx.fill();
-        ctx.fillStyle = '#28323D';
-        ctx.font = '10px Segoe UI';
-        ctx.fillText(`C${i+1}`, x1 + 10, y1 - 10);
-        ctx.fillText(`C${i+2}`, x2 + 10, y2 - 10);
-        i += 2;
+    while (i < pts.length) {
+      const tipo = String(pts[i]?.[0] || 'L').toUpperCase();
+      const pose = pose6(pts[i]?.[1]);
+      if (tipo === 'C') {
+        if (i + 2 < pts.length && String(pts[i+1]?.[0] || '').toUpperCase() === 'C' && String(pts[i+2]?.[0] || '').toUpperCase() === 'C') {
+          desenharLinhaPose(currentPose, pose, '#CC3340', 2.5);
+          desenharMarcadorPose(pose, `C${i+1} início`, '#E0A100', 5);
+          ctx.strokeStyle = '#E0A100';
+          ctx.lineWidth = 3;
+          drawJakaMoveCArc(pose, pose6(pts[i+1][1]), pose6(pts[i+2][1]));
+          desenharMarcadorPose(pose6(pts[i+1][1]), `C${i+2} passagem`, '#E0A100', 5);
+          desenharMarcadorPose(pose6(pts[i+2][1]), `C${i+3} fim`, '#E0A100', 5);
+          currentPose = pose6(pts[i+2][1]);
+          i += 3;
+        } else {
+          // Bloco C incompleto: marca visualmente em vermelho e deixa o backend/modal explicar o erro.
+          desenharLinhaPose(currentPose, pose, '#CC3340', 2);
+          desenharMarcadorPose(pose, `C${i+1} incompleto`, '#CC3340', 5);
+          currentPose = pose;
+          i += 1;
+        }
       } else {
-        let x1 = offset_x + (p_atual[0] * escala);
-        let y1 = offset_y - (p_atual[1] * escala);
-        ctx.strokeStyle = '#CC3340';
-        ctx.lineWidth = 3;
-        ctx.beginPath(); ctx.moveTo(x0, y0); ctx.lineTo(x1, y1); ctx.stroke();
-        ctx.fillStyle = '#28323D';
-        ctx.beginPath(); ctx.arc(x1, y1, 5, 0, 2*Math.PI); ctx.fill();
-        ctx.font = '10px Segoe UI';
-        ctx.fillText(`L${i+1}`, x1 + 10, y1 - 10);
-        i++;
+        desenharLinhaPose(currentPose, pose, '#CC3340', 3);
+        desenharMarcadorPose(pose, `L${i+1}`, '#28323D', 5);
+        currentPose = pose;
+        i += 1;
       }
     }
   }
 
-  // Cursor TCP atual
-  let tx = offset_x + ((estadoLocal.tcp[0] || 0) * escala);
-  let ty = offset_y - ((estadoLocal.tcp[1] || 0) * escala);
+  const tcp = pose6(estadoLocal.tcp);
+  const tcpP = projectPoseToCanvas(tcp);
+  let tx = tcpP.x;
+  let ty = tcpP.y;
   ctx.strokeStyle = '#00AED6';
   ctx.lineWidth = 2;
   ctx.beginPath(); ctx.moveTo(tx - 18, ty); ctx.lineTo(tx + 18, ty); ctx.stroke();
   ctx.beginPath(); ctx.moveTo(tx, ty - 18); ctx.lineTo(tx, ty + 18); ctx.stroke();
   ctx.beginPath(); ctx.arc(tx, ty, 5, 0, 2*Math.PI); ctx.fillStyle = '#003865'; ctx.fill(); ctx.stroke();
 }
+
 
 function ajustarVelocidades() {
   const rep = document.getElementById('sl-repro').value;
@@ -694,17 +791,65 @@ function ajustarVelocidades() {
   }).catch(() => {/* backend indisponível */});
 }
 
+
+function mostrarErroTrajetoria(errors) {
+  const modal = document.getElementById('modal-erro-trajetoria');
+  const list = document.getElementById('modal-erro-list');
+  if (!modal || !list) return;
+  const arr = Array.isArray(errors) && errors.length ? errors : ['Trajetória inválida.'];
+  list.innerHTML = arr.map(e => `<li>${escapeHtml(String(e))}</li>`).join('');
+  modal.classList.add('show');
+}
+
+function reconhecerErroTrajetoria() {
+  fetch('/api/trajetoria/erro/ack', { method: 'POST' })
+    .catch(() => {})
+    .finally(() => {
+      const modal = document.getElementById('modal-erro-trajetoria');
+      if (modal) modal.classList.remove('show');
+      atualizarStatusTrajetoria('Erro reconhecido. Ajuste a trajetória e tente novamente.', 'warn');
+    });
+}
+
+function escapeHtml(str) {
+  return str.replace(/[&<>"']/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]));
+}
+
 function executarTrajetoria() {
   fetch('/api/trajetoria/executar', { method: 'POST' })
     .then(async r => ({ ok: r.ok, data: await r.json().catch(() => ({})) }))
     .then(({ok, data}) => {
       const msg = data.message || (ok ? 'Trajetória iniciada.' : 'Trajetória inválida.');
       atualizarStatusTrajetoria(msg, ok ? 'ok' : 'err');
+      if (!ok && (data.errors || data.status === 'trajectory_error')) {
+        mostrarErroTrajetoria(data.errors || [msg]);
+      }
       toast(msg);
     })
     .catch(() => {
       atualizarStatusTrajetoria('Backend não conectado. Nenhum movimento foi enviado ao robô.', 'err');
       toast('Backend não conectado.');
+    });
+}
+
+function removerUltimoPonto() {
+  fetch('/api/trajetoria/remover_ultimo', { method: 'POST' })
+    .then(async r => ({ ok: r.ok, data: await r.json().catch(() => ({})) }))
+    .then(({data}) => {
+      const pts = Array.isArray(data.pontos) ? data.pontos : null;
+      if (pts) {
+        estadoLocal.pontos = pts;
+        renderizarListaPontos(pts);
+        desenharVisualizacao();
+      }
+      atualizarStatusTrajetoria(data.message || 'Último ponto removido.', 'warn');
+      toast(data.message || 'Último ponto removido.');
+    })
+    .catch(() => {
+      if (estadoLocal.pontos.length) estadoLocal.pontos.pop();
+      renderizarListaPontos(estadoLocal.pontos);
+      desenharVisualizacao();
+      atualizarStatusTrajetoria('Backend não conectado. Removido apenas na interface visual.', 'warn');
     });
 }
 

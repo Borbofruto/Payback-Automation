@@ -491,12 +491,17 @@ class RobotAdapter:
             self.last_sent_vels[eixo] = 0.0
 
     def _processar_joystick(self, joy):
-        # Se houve erro de trajetória em uma tentativa de execução, o joystick fica
-        # bloqueado até o operador reconhecer o modal na IHM. Isso evita que o robô
-        # continue sendo movimentado em um estado operacional ambíguo.
+        """Processamento de joystick restaurado para a lógica estável antiga.
+
+        A V17 tentou "proteger" conflitos de grupos chamando jog_stop em eixos
+        inativos a cada ciclo. Isso degradou o jog real para movimento em ticks,
+        porque a SDK/controlador recebia paradas repetidas enquanto comandos de
+        jog eram enviados. Aqui a trava volta ao modelo validado: escolhe um grupo
+        ativo, mantém esse grupo até soltar seus botões, e só para o grupo que foi
+        efetivamente liberado.
+        """
+        # Se houve erro de trajetória, bloqueia o jog até ACK do operador.
         if self.trajetoria_em_erro:
-            # Movimento manual bloqueado até ACK do operador.
-            # IMPORTANTE: não repetir jog_stop em loop; a parada já foi emitida em definir_erro_trajetoria().
             self.grupo_ativo = None
             for b in (4, 5, 6, 7, 8, 15):
                 try:
@@ -505,104 +510,133 @@ class RobotAdapter:
                     pass
             return
 
+        # Troca de orientação do joystick/operator frame (L3 e R3)
         b7 = joy.get_button(7)
         if b7 == 1 and self.last_btns[7] == 0:
             self.angulo_operador -= math.pi / 2
+            print(f"[PERSPECTIVA] Visão à Esquerda. Ângulo: {math.degrees(self.angulo_operador)}°")
         self.last_btns[7] = b7
+
         b8 = joy.get_button(8)
         if b8 == 1 and self.last_btns[8] == 0:
             self.angulo_operador += math.pi / 2
+            print(f"[PERSPECTIVA] Visão à Direita. Ângulo: {math.degrees(self.angulo_operador)}°")
         self.last_btns[8] = b8
 
-        cos_t = math.cos(self.angulo_operador)
-        sin_t = math.sin(self.angulo_operador)
-        btn_14, btn_13, btn_11, btn_12 = joy.get_button(14), joy.get_button(13), joy.get_button(11), joy.get_button(12)
-        btn_0, btn_3, btn_1, btn_2 = joy.get_button(0), joy.get_button(3), joy.get_button(1), joy.get_button(2)
-        axis_4, axis_5 = joy.get_axis(4), joy.get_axis(5)
+        cos_theta = math.cos(self.angulo_operador)
+        sin_theta = math.sin(self.angulo_operador)
+
+        # Leitura bruta de botões/eixos
+        btn_14 = joy.get_button(14)
+        btn_13 = joy.get_button(13)
+        btn_11 = joy.get_button(11)
+        btn_12 = joy.get_button(12)
+
+        btn_0 = joy.get_button(0)
+        btn_3 = joy.get_button(3)
+        btn_1 = joy.get_button(1)
+        btn_2 = joy.get_button(2)
+
+        axis_4 = joy.get_axis(4)
+        axis_5 = joy.get_axis(5)
+
         btn_9 = joy.get_button(9)
         btn_10 = joy.get_button(10) if joy.get_init() and joy.get_numbuttons() > 10 else 0
 
-        pressing_linear = (btn_14 or btn_13 or btn_11 or btn_12)
-        pressing_rot = (btn_0 or btn_3 or btn_1 or btn_2)
-        pressing_z = (axis_4 > -0.9 or axis_5 > -0.9)
-        pressing_rz = (btn_9 or btn_10)
+        pressionando_linear = (btn_14 or btn_13 or btn_11 or btn_12)
+        pressionando_rotat = (btn_0 or btn_3 or btn_1 or btn_2)
+        pressionando_z = (axis_4 > -0.9 or axis_5 > -0.9)
+        pressionando_rz = (btn_9 or btn_10)
 
-        grupos_pressionados = sum(bool(x) for x in (pressing_linear, pressing_rot, pressing_z, pressing_rz))
-
-        # Se o operador combina grupos de comando diferentes, bloqueia o jog naquele ciclo.
-        # Isso corrige o runaway observado ao segurar translação e apertar rotação junto.
-        if grupos_pressionados > 1:
-            self.parar_grupo([0, 1, 2, 3, 4, 5])
-            self.grupo_ativo = None
-            return
-
+        # Trava de exclusividade original: escolhe o primeiro grupo e ignora outros
+        # enquanto o grupo ativo estiver pressionado. Não fica mandando stop em
+        # todos os eixos no meio do jog.
         if self.grupo_ativo is None:
-            if pressing_linear:
-                self.grupo_ativo = "LINEAR"
-            elif pressing_rot:
-                self.grupo_ativo = "ROTAT_TCP"
-            elif pressing_z:
-                self.grupo_ativo = "EIXO_Z"
-            elif pressing_rz:
-                self.grupo_ativo = "EIXO_RZ"
+            if pressionando_linear:
+                self.grupo_ativo = 'LINEAR'
+            elif pressionando_rotat:
+                self.grupo_ativo = 'ROTAT_TCP'
+            elif pressionando_z:
+                self.grupo_ativo = 'EIXO_Z'
+            elif pressionando_rz:
+                self.grupo_ativo = 'EIXO_RZ'
 
-        if self.grupo_ativo == "LINEAR" and not pressing_linear:
-            self.parar_grupo([0, 1]); self.grupo_ativo = None
-        elif self.grupo_ativo == "ROTAT_TCP" and not pressing_rot:
-            self.parar_grupo([3, 4]); self.grupo_ativo = None
-        elif self.grupo_ativo == "EIXO_Z" and not pressing_z:
-            self.parar_grupo([2]); self.grupo_ativo = None
-        elif self.grupo_ativo == "EIXO_RZ" and not pressing_rz:
-            self.parar_grupo([5]); self.grupo_ativo = None
+        # Parada apenas do grupo liberado.
+        if self.grupo_ativo == 'LINEAR' and not pressionando_linear:
+            self.parar_grupo([0, 1])
+            self.grupo_ativo = None
+        elif self.grupo_ativo == 'ROTAT_TCP' and not pressionando_rotat:
+            self.parar_grupo([3, 4])
+            self.grupo_ativo = None
+        elif self.grupo_ativo == 'EIXO_Z' and not pressionando_z:
+            self.parar_grupo([2])
+            self.grupo_ativo = None
+        elif self.grupo_ativo == 'EIXO_RZ' and not pressionando_rz:
+            self.parar_grupo([5])
+            self.grupo_ativo = None
 
-        if self.grupo_ativo == "LINEAR":
-            self.parar_grupo([2, 3, 4, 5])
-            vx_raw = float(btn_14 - btn_13) * self.MAX_SPD_LINEAR
-            vy_raw = float(btn_11 - btn_12) * self.MAX_SPD_LINEAR
-            self.enviar_jog(0, vx_raw * cos_t - vy_raw * sin_t, 0)
-            self.enviar_jog(1, vx_raw * sin_t + vy_raw * cos_t, 0)
-        elif self.grupo_ativo == "ROTAT_TCP":
-            self.parar_grupo([0, 1, 2, 5])
-            vrx_raw = float(btn_0 - btn_3) * self.MAX_SPD_ROTAT
-            vry_raw = float(btn_1 - btn_2) * self.MAX_SPD_ROTAT
-            self.enviar_jog(3, vrx_raw * cos_t - vry_raw * sin_t, 2)
-            self.enviar_jog(4, vrx_raw * sin_t + vry_raw * cos_t, 2)
-        elif self.grupo_ativo == "EIXO_Z":
-            self.parar_grupo([0, 1, 3, 4, 5])
-            down = (axis_4 + 1.0) / 2.0 if axis_4 > -0.9 else 0.0
-            up = (axis_5 + 1.0) / 2.0 if axis_5 > -0.9 else 0.0
-            self.enviar_jog(2, (up - down) * self.MAX_SPD_LINEAR, 0)
-        elif self.grupo_ativo == "EIXO_RZ":
-            self.parar_grupo([0, 1, 2, 3, 4])
-            self.enviar_jog(5, float(btn_9 - btn_10) * self.MAX_SPD_ROTAT, 1)
-        else:
-            self.parar_grupo([0, 1, 2, 3, 4, 5])
+        if not (pressionando_linear or pressionando_rotat or pressionando_z or pressionando_rz):
+            self.grupo_ativo = None
 
-        # salvar pontos
+        # Execução do grupo ativo.
+        if self.grupo_ativo == 'LINEAR':
+            v_x_bruta = float(btn_14 - btn_13) * self.MAX_SPD_LINEAR
+            v_y_bruta = float(btn_11 - btn_12) * self.MAX_SPD_LINEAR
+            v_x_rotacionada = v_x_bruta * cos_theta - v_y_bruta * sin_theta
+            v_y_rotacionada = v_x_bruta * sin_theta + v_y_bruta * cos_theta
+            self.enviar_jog(0, v_x_rotacionada, 0)
+            self.enviar_jog(1, v_y_rotacionada, 0)
+
+        elif self.grupo_ativo == 'ROTAT_TCP':
+            v_rx_bruta = float(btn_0 - btn_3) * self.MAX_SPD_ROTAT
+            v_ry_bruta = float(btn_1 - btn_2) * self.MAX_SPD_ROTAT
+            v_rx_rotacionada = v_rx_bruta * cos_theta - v_ry_bruta * sin_theta
+            v_ry_rotacionada = v_rx_bruta * sin_theta + v_ry_bruta * cos_theta
+            self.enviar_jog(3, v_rx_rotacionada, 2)
+            self.enviar_jog(4, v_ry_rotacionada, 2)
+
+        elif self.grupo_ativo == 'EIXO_Z':
+            g_down = (axis_4 + 1.0) / 2.0 if axis_4 > -0.9 else 0.0
+            g_up = (axis_5 + 1.0) / 2.0 if axis_5 > -0.9 else 0.0
+            v_z = (g_up - g_down) * self.MAX_SPD_LINEAR
+            self.enviar_jog(2, v_z, 0)
+
+        elif self.grupo_ativo == 'EIXO_RZ':
+            v_rz = float(btn_9 - btn_10) * self.MAX_SPD_ROTAT
+            self.enviar_jog(5, v_rz, 1)
+
+        # Salvar ponto linear
         b6 = joy.get_button(6)
         if b6 == 1 and self.last_btns[6] == 0:
-            self.salvar_ponto_atual("L")
+            self.salvar_ponto_atual('L')
         self.last_btns[6] = b6
+
+        # Salvar ponto circular
         b4 = joy.get_button(4)
         if b4 == 1 and self.last_btns[4] == 0:
-            self.salvar_ponto_atual("C")
+            self.salvar_ponto_atual('C')
         self.last_btns[4] = b4
 
-        # botão 5: toque apaga último, segurar 2s limpa tudo
+        # Botão 5: toque remove último; segurar 2s limpa tudo.
         b5 = joy.get_button(5)
         if b5 == 1:
             if self.last_btns[5] == 0:
-                self.b5_press_time = time.time(); self.b5_triggered_long_press = False
-            elif self.b5_press_time and not self.b5_triggered_long_press and time.time() - self.b5_press_time >= 2.0:
-                self.limpar_pontos(); self.b5_triggered_long_press = True
+                self.b5_press_time = time.time()
+                self.b5_triggered_long_press = False
+            elif self.b5_press_time and not self.b5_triggered_long_press:
+                if time.time() - self.b5_press_time >= 2.0:
+                    self.limpar_pontos()
+                    print('[JOYSTICK] Botão 5 segurado por 2s: trajetória limpa.')
+                    self.b5_triggered_long_press = True
         elif b5 == 0 and self.last_btns[5] == 1:
             if not self.b5_triggered_long_press:
-                pts = self._get_pontos_snapshot()
-                if pts:
-                    self.remover_ultimo_ponto()
-            self.b5_press_time = None; self.b5_triggered_long_press = False
+                if self.remover_ultimo_ponto():
+                    print('[JOYSTICK] Botão 5: último ponto removido.')
+            self.b5_press_time = None
+            self.b5_triggered_long_press = False
         self.last_btns[5] = b5
 
+        # Botão 15: executar com backup dos pontos para manter a tela.
         b15 = joy.get_button(15)
         if b15 == 1 and self.last_btns[15] == 0:
             backup = self._get_pontos_snapshot()
