@@ -1,5 +1,5 @@
 # app.py
-# Backend Flask/Socket.IO — IHM Solda Payback — V17 correções de pontos/jog/modal.
+# Backend Flask/Socket.IO — IHM Solda Payback — V17.2 parâmetros operacionais.
 # HTML fica na raiz do projeto.
 
 import eventlet
@@ -51,6 +51,42 @@ def configurar_velocidades():
         })
     except Exception as e:
         return jsonify({'status': 'error', 'message': f'Velocidade inválida: {e}'}), 400
+
+
+@app.route('/api/parametros', methods=['GET'])
+def obter_parametros():
+    return jsonify({'status': 'success', 'parametros': adapter.get_parametros_operacionais()})
+
+
+@app.route('/api/parametros', methods=['POST'])
+def atualizar_parametros():
+    dados = request.get_json(silent=True) or {}
+    try:
+        params = adapter.set_parametros_operacionais(dados)
+        socketio.emit('atualizar_estado', adapter.snapshot_state())
+        socketio.emit('execucao_status', {'message': 'Parâmetros atualizados. Controle manual permanece pausado até liberação.', 'status': 'warn'})
+        return jsonify({'status': 'success', 'parametros': params, 'message': 'Parâmetros atualizados.'})
+    except Exception as e:
+        return jsonify({'status': 'error', 'message': str(e), 'parametros': adapter.get_parametros_operacionais()}), 400
+
+
+@app.route('/api/controle/pausar', methods=['POST'])
+def pausar_controle():
+    dados = request.get_json(silent=True) or {}
+    motivo = dados.get('motivo', 'edição de parâmetros')
+    params = adapter.pausar_controle_manual(motivo)
+    socketio.emit('atualizar_estado', adapter.snapshot_state())
+    socketio.emit('execucao_status', {'message': 'Controle manual pausado para edição de parâmetros.', 'status': 'warn'})
+    return jsonify({'status': 'success', 'parametros': params, 'message': 'Controle manual pausado.'})
+
+
+@app.route('/api/controle/retomar', methods=['POST'])
+def retomar_controle():
+    params = adapter.retomar_controle_manual()
+    socketio.emit('atualizar_estado', adapter.snapshot_state())
+    socketio.emit('execucao_status', {'message': 'Controle manual liberado.', 'status': 'info'})
+    return jsonify({'status': 'success', 'parametros': params, 'message': 'Controle manual liberado.'})
+
 
 
 @app.route('/api/robo/conectar', methods=['POST'])

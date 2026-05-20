@@ -166,6 +166,29 @@ canvas{width:100%;height:100%;display:block;background:#fff;position:relative;z-
 ::-webkit-scrollbar{width:6px;height:6px;}
 ::-webkit-scrollbar-track{background:transparent;}
 ::-webkit-scrollbar-thumb{background:var(--bd);border-radius:4px;}
+
+.param-layout{display:grid;grid-template-columns:1.1fr 430px;gap:20px;width:100%;min-height:0;}
+.param-main{display:flex;flex-direction:column;gap:12px;min-width:0;overflow:auto;}
+.param-side{display:flex;flex-direction:column;gap:12px;overflow:auto;}
+.param-hero{padding:18px;border:1px solid var(--bd);border-radius:var(--r8);background:#fff;box-shadow:var(--sh);}
+.param-hero h3{font-size:calc(18px * var(--fs));color:var(--nv);margin-bottom:8px;display:flex;align-items:center;gap:9px;}
+.param-hero h3 i{color:var(--ac);}
+.param-hero p{color:var(--t2);line-height:1.5;font-weight:650;margin-bottom:10px;}
+.param-list{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-top:12px;}
+.param-info{border:1px solid var(--bd);border-radius:var(--r8);background:var(--bg);padding:12px;}
+.param-info strong{display:block;color:var(--nv);font-size:calc(12px * var(--fs));text-transform:uppercase;letter-spacing:.07em;margin-bottom:4px;}
+.param-info span{color:var(--t2);font-size:calc(12px * var(--fs));line-height:1.35;}
+.param-field{margin-bottom:12px;}
+.param-field label{display:flex;justify-content:space-between;gap:8px;font-size:calc(10px * var(--fs));font-weight:900;color:var(--t2);text-transform:uppercase;letter-spacing:.07em;margin-bottom:6px;}
+.param-field input{width:100%;border:1px solid var(--bd);border-radius:var(--r6);padding:10px 11px;font-size:calc(14px * var(--fs));font-weight:800;color:var(--nv);background:#fff;font-variant-numeric:tabular-nums;}
+.param-field input:disabled{background:#F1F5F9;color:var(--t3);cursor:not-allowed;}
+.param-help{font-size:calc(11px * var(--fs));color:var(--t3);font-weight:650;line-height:1.35;margin-top:5px;}
+.param-status{border:1px solid var(--bd);border-radius:var(--r8);padding:12px;background:#F8FAFC;color:var(--t2);font-size:calc(12px * var(--fs));font-weight:800;line-height:1.35;}
+.param-status.paused{background:#FFF7E6;border-color:#F4D08A;color:#8A6200;}
+.param-status.free{background:#EAF7EF;border-color:#BFE5CC;color:var(--ok);}
+.param-actions{display:grid;grid-template-columns:1fr;gap:8px;}
+@media(max-width:1400px){.param-layout{grid-template-columns:1fr 390px}.param-list{grid-template-columns:1fr}}
+
 @media(max-width:1400px){.side{width:390px}.hd{height:86px}.nav{width:180px}.art{padding:14px;gap:14px}.grid-coordenadas{gap:6px}.btn{padding:8px 12px}.ft{height:54px}}
 
 
@@ -240,10 +263,10 @@ canvas{width:100%;height:100%;display:block;background:#fff;position:relative;z-
     <nav class="nav">
       <a id="nav-trajetoria" class="active" onclick="mostrarTela('trajetoria')"><i class="fa-solid fa-route"></i> Trajetória</a>
       <a id="nav-telemetria" onclick="mostrarTela('telemetria')"><i class="fa-solid fa-chart-line"></i> Telemetria</a>
-      <a onclick="toast('Parâmetros avançados entram depois da validação visual')"><i class="fa-solid fa-sliders"></i> Parâmetros</a>
+      <a id="nav-parametros" onclick="mostrarTela('parametros')"><i class="fa-solid fa-sliders"></i> Parâmetros</a>
       <a onclick="toast('Log operacional será conectado na etapa de backend')"><i class="fa-solid fa-scroll"></i> Log</a>
       <div class="nav-spacer"></div>
-      <div class="nav-foot">Módulo de solda<br>Versão V18 · jog restaurado<br>Backend Python/Socket.IO</div>
+      <div class="nav-foot">Módulo de solda<br>Versão V17.2 · parâmetros<br>Backend Python/Socket.IO</div>
     </nav>
 
     <main class="art">
@@ -355,6 +378,54 @@ canvas{width:100%;height:100%;display:block;background:#fff;position:relative;z-
           </div>
         </aside>
       </section>
+
+      <section id="page-parametros" class="page">
+        <div class="param-layout">
+          <div class="param-main">
+            <div class="param-hero">
+              <h3><i class="fa-solid fa-sliders"></i> Parâmetros operacionais</h3>
+              <p>Esta tela altera apenas parâmetros de operação do backend: altura de aproximação/saída e velocidades de jog manual. Ao entrar em edição, o controle por joystick é pausado para impedir alteração de velocidade enquanto o operador mantém algum eixo pressionado.</p>
+              <div class="param-list">
+                <div class="param-info"><strong>Clearance Z</strong><span>Altura adicional em Z aplicada no ponto de entrada e no ponto de saída da trajetória.</span></div>
+                <div class="param-info"><strong>Jog linear</strong><span>Velocidade máxima dos eixos X/Y/Z no controle manual por joystick.</span></div>
+                <div class="param-info"><strong>Jog rotacional</strong><span>Velocidade máxima dos eixos RX/RY/RZ no controle manual por joystick.</span></div>
+              </div>
+            </div>
+
+            <div class="card">
+              <div class="cttl"><i class="fa-solid fa-triangle-exclamation"></i> Regra de edição</div>
+              <div id="param-status" class="param-status free">Controle manual liberado. Clique em “Pausar e editar” antes de alterar parâmetros.</div>
+            </div>
+          </div>
+
+          <aside class="param-side">
+            <div class="card">
+              <div class="cttl"><i class="fa-solid fa-gear"></i> Ajustes</div>
+              <div class="param-field">
+                <label>Clearance Z entrada/saída <span>mm</span></label>
+                <input id="par-clearance" type="number" min="0" max="500" step="1" value="50" disabled>
+                <div class="param-help">Valor somado ao Z da pose absoluta de entrada e saída. RX/RY/RZ permanecem os da pose salva.</div>
+              </div>
+              <div class="param-field">
+                <label>Velocidade jog linear <span>mm/s</span></label>
+                <input id="par-jog-linear" type="number" min="1" max="500" step="1" value="120" disabled>
+                <div class="param-help">Afeta X, Y e Z no joystick. Não altera velocidade de reprodução da trajetória.</div>
+              </div>
+              <div class="param-field">
+                <label>Velocidade jog rotacional <span>rad/s</span></label>
+                <input id="par-jog-rot" type="number" min="0.05" max="20" step="0.05" value="6" disabled>
+                <div class="param-help">Afeta RX, RY e RZ no joystick.</div>
+              </div>
+              <div class="param-actions">
+                <button id="btn-param-editar" class="btn btn-o" onclick="iniciarEdicaoParametros()"><i class="fa-solid fa-pause"></i> Pausar e editar</button>
+                <button id="btn-param-salvar" class="btn btn-p" onclick="salvarParametros()" disabled><i class="fa-solid fa-check"></i> Aplicar e liberar controle</button>
+                <button id="btn-param-cancelar" class="btn btn-g" onclick="cancelarEdicaoParametros()" disabled><i class="fa-solid fa-xmark"></i> Cancelar edição</button>
+              </div>
+            </div>
+          </aside>
+        </div>
+      </section>
+
     </main>
   </div>
 
@@ -420,9 +491,12 @@ function mostrarTela(nome) {
   telaAtual = nome;
   document.getElementById('page-trajetoria').classList.toggle('active', nome === 'trajetoria');
   document.getElementById('page-telemetria').classList.toggle('active', nome === 'telemetria');
+  document.getElementById('page-parametros').classList.toggle('active', nome === 'parametros');
   document.getElementById('nav-trajetoria').classList.toggle('active', nome === 'trajetoria');
   document.getElementById('nav-telemetria').classList.toggle('active', nome === 'telemetria');
+  document.getElementById('nav-parametros').classList.toggle('active', nome === 'parametros');
   if (nome === 'trajetoria') setTimeout(resizeCanvas, 40);
+  if (nome === 'parametros') carregarParametros();
 }
 
 function toast(msg) {
@@ -452,6 +526,12 @@ if (socket) {
     if (dados.diagnosticos) {
       atualizarDiagnosticosReais(dados.diagnosticos);
     }
+    if (dados.parametros) {
+      atualizarParametrosUI(dados.parametros, false);
+    }
+    if (typeof dados.controle_manual_pausado !== 'undefined') {
+      atualizarStatusControleManual(!!dados.controle_manual_pausado);
+    }
 
     if (dados.trajetoria_em_erro) {
       const errs = Array.isArray(dados.trajetoria_erros) && dados.trajetoria_erros.length
@@ -470,6 +550,12 @@ if (socket) {
     validarTrajetoriaAtual();
     if (dados.diagnosticos) {
       atualizarDiagnosticosReais(dados.diagnosticos);
+    }
+    if (dados.parametros) {
+      atualizarParametrosUI(dados.parametros, false);
+    }
+    if (typeof dados.controle_manual_pausado !== 'undefined') {
+      atualizarStatusControleManual(!!dados.controle_manual_pausado);
     }
 
     if (dados.trajetoria_em_erro) {
@@ -779,6 +865,113 @@ function desenharVisualizacao() {
 }
 
 
+
+let parametrosEditando = false;
+let parametrosCache = { clearance_z_mm: 50, jog_linear_mm_s: 120, jog_rot_rad_s: 6, controle_manual_pausado: false };
+
+function setParametrosEditaveis(editando) {
+  parametrosEditando = !!editando;
+  ['par-clearance','par-jog-linear','par-jog-rot'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.disabled = !parametrosEditando;
+  });
+  const bEdit = document.getElementById('btn-param-editar');
+  const bSave = document.getElementById('btn-param-salvar');
+  const bCancel = document.getElementById('btn-param-cancelar');
+  if (bEdit) bEdit.disabled = parametrosEditando;
+  if (bSave) bSave.disabled = !parametrosEditando;
+  if (bCancel) bCancel.disabled = !parametrosEditando;
+}
+
+function atualizarParametrosUI(params, sobrescreverInputs=true) {
+  if (!params) return;
+  parametrosCache = Object.assign({}, parametrosCache, params);
+  if (sobrescreverInputs || !parametrosEditando) {
+    const c = document.getElementById('par-clearance');
+    const jl = document.getElementById('par-jog-linear');
+    const jr = document.getElementById('par-jog-rot');
+    if (c && params.clearance_z_mm !== undefined) c.value = Number(params.clearance_z_mm).toFixed(0);
+    if (jl && params.jog_linear_mm_s !== undefined) jl.value = Number(params.jog_linear_mm_s).toFixed(0);
+    if (jr && params.jog_rot_rad_s !== undefined) jr.value = Number(params.jog_rot_rad_s).toFixed(2);
+  }
+  atualizarStatusControleManual(!!params.controle_manual_pausado);
+}
+
+function atualizarStatusControleManual(pausado) {
+  const el = document.getElementById('param-status');
+  if (!el) return;
+  if (pausado) {
+    el.className = 'param-status paused';
+    el.innerText = 'Controle manual pausado. O joystick não envia jog enquanto os parâmetros estão em edição.';
+  } else {
+    el.className = 'param-status free';
+    el.innerText = 'Controle manual liberado. Clique em “Pausar e editar” antes de alterar parâmetros.';
+  }
+}
+
+function carregarParametros() {
+  fetch('/api/parametros')
+    .then(r => r.json())
+    .then(data => {
+      if (data && data.parametros) atualizarParametrosUI(data.parametros, true);
+    })
+    .catch(() => {
+      atualizarStatusControleManual(false);
+    });
+}
+
+function iniciarEdicaoParametros() {
+  fetch('/api/controle/pausar', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ motivo: 'edição de parâmetros operacionais pela IHM' })
+  })
+    .then(r => r.json())
+    .then(data => {
+      if (data && data.parametros) atualizarParametrosUI(data.parametros, true);
+      setParametrosEditaveis(true);
+      toast('Controle pausado. Edite os parâmetros.');
+    })
+    .catch(() => {
+      setParametrosEditaveis(true);
+      toast('Backend indisponível. Edição visual liberada, mas não aplicada ao robô.');
+    });
+}
+
+function cancelarEdicaoParametros() {
+  carregarParametros();
+  fetch('/api/controle/retomar', { method: 'POST' }).catch(() => {});
+  setParametrosEditaveis(false);
+  atualizarStatusControleManual(false);
+  toast('Edição cancelada. Controle liberado.');
+}
+
+function salvarParametros() {
+  const payload = {
+    clearance_z_mm: Number(document.getElementById('par-clearance')?.value || 50),
+    jog_linear_mm_s: Number(document.getElementById('par-jog-linear')?.value || 120),
+    jog_rot_rad_s: Number(document.getElementById('par-jog-rot')?.value || 6)
+  };
+  fetch('/api/parametros', {
+    method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(payload)
+  })
+    .then(async r => ({ ok: r.ok, data: await r.json().catch(() => ({})) }))
+    .then(({ok, data}) => {
+      if (!ok) throw new Error(data.message || 'Falha ao salvar parâmetros.');
+      if (data.parametros) atualizarParametrosUI(data.parametros, true);
+      return fetch('/api/controle/retomar', { method: 'POST' })
+        .then(r => r.json()).catch(() => ({}));
+    })
+    .then(data => {
+      if (data && data.parametros) atualizarParametrosUI(data.parametros, true);
+      setParametrosEditaveis(false);
+      atualizarStatusControleManual(false);
+      toast('Parâmetros aplicados. Controle liberado.');
+    })
+    .catch(err => {
+      toast(err.message || 'Falha ao aplicar parâmetros.');
+    });
+}
+
 function ajustarVelocidades() {
   const rep = document.getElementById('sl-repro').value;
   const apr = document.getElementById('sl-aprox').value;
@@ -1018,6 +1211,8 @@ atualizarIndicadoresDemo();
 setInterval(atualizarIndicadoresDemo, 300);
 
 // Estado inicial para validação visual sem backend
+carregarParametros();
+setParametrosEditaveis(false);
 renderizarListaPontos([]);
 atualizarStatusTrajetoria('Aguardando pontos. Adicione pelo menos 2 pontos para executar.', 'warn');
 setTimeout(resizeCanvas, 80);

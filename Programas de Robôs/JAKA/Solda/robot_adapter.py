@@ -1,5 +1,5 @@
 # robot_adapter.py
-# Adapter de alto nível da IHM de Solda Payback — V17.
+# Adapter de alto nível da IHM de Solda Payback — V17.2.
 # Cola driver JAKA, planner de trajetória, telemetria e joystick.
 
 import copy
@@ -31,6 +31,9 @@ class RobotAdapter:
         self.DEADZONE = 0.2
         self.vel_reproducao = 15.0
         self.vel_aproximacao = 150.0
+        self.clearance_z_mm = 50.0
+        self.controle_manual_pausado = False
+        self._pause_stop_emitido = False
         # Pequena folga entre comandos não bloqueantes para evitar perda/reordenação
         # observada em trajetórias mistas no controlador. Não é delay de execução; é
         # intervalo de envio de comando para a fila do controlador.
@@ -152,6 +155,62 @@ class RobotAdapter:
         with self._state_lock:
             return list(self.trajetoria_erros)
 
+    def get_parametros_operacionais(self) -> Dict[str, Any]:
+        with self._state_lock:
+            return {
+                "clearance_z_mm": float(self.clearance_z_mm),
+                "jog_linear_mm_s": float(self.MAX_SPD_LINEAR),
+                "jog_rot_rad_s": float(self.MAX_SPD_ROTAT),
+                "controle_manual_pausado": bool(self.controle_manual_pausado),
+            }
+
+    def set_parametros_operacionais(self, dados: Dict[str, Any]) -> Dict[str, Any]:
+        """Atualiza parâmetros editáveis da tela Parâmetros.
+
+        Não altera trajetória já em execução. Para evitar troca de velocidade enquanto
+        o operador segura o controle, a IHM deve pausar o controle antes de chamar este
+        método. Mesmo assim, o backend força pausa durante a escrita.
+        """
+        self.pausar_controle_manual("editando parâmetros operacionais")
+        try:
+            if "clearance_z_mm" in dados:
+                v = float(dados["clearance_z_mm"])
+                if not (0.0 <= v <= 500.0):
+                    raise ValueError("Clearance Z deve estar entre 0 e 500 mm.")
+                self.clearance_z_mm = v
+            if "jog_linear_mm_s" in dados:
+                v = float(dados["jog_linear_mm_s"])
+                if not (1.0 <= v <= 500.0):
+                    raise ValueError("Velocidade jog linear deve estar entre 1 e 500 mm/s.")
+                self.MAX_SPD_LINEAR = v
+            if "jog_rot_rad_s" in dados:
+                v = float(dados["jog_rot_rad_s"])
+                if not (0.05 <= v <= 20.0):
+                    raise ValueError("Velocidade jog rotacional deve estar entre 0.05 e 20 rad/s.")
+                self.MAX_SPD_ROTAT = v
+        finally:
+            # Não libera automaticamente: a IHM libera explicitamente ao sair do modo edição.
+            pass
+        return self.get_parametros_operacionais()
+
+    def pausar_controle_manual(self, motivo: str = "pausa manual") -> Dict[str, Any]:
+        with self._state_lock:
+            self.controle_manual_pausado = True
+            self.diagnosticos["controle_manual_pausado"] = True
+            self.diagnosticos["controle_manual_pausa_motivo"] = motivo
+        self.parar_grupo([0, 1, 2, 3, 4, 5])
+        self.grupo_ativo = None
+        self._pause_stop_emitido = True
+        return self.get_parametros_operacionais()
+
+    def retomar_controle_manual(self) -> Dict[str, Any]:
+        with self._state_lock:
+            self.controle_manual_pausado = False
+            self.diagnosticos["controle_manual_pausado"] = False
+            self.diagnosticos["controle_manual_pausa_motivo"] = ""
+        self._pause_stop_emitido = False
+        return self.get_parametros_operacionais()
+
     def snapshot_state(self) -> Dict[str, Any]:
         return {
             "tcp": self._copy_tcp(),
@@ -161,6 +220,8 @@ class RobotAdapter:
             "diagnosticos": copy.deepcopy(self.diagnosticos),
             "trajetoria_em_erro": self.trajetoria_em_erro,
             "trajetoria_erros": list(self.trajetoria_erros),
+            "controle_manual_pausado": bool(self.controle_manual_pausado),
+            "parametros": self.get_parametros_operacionais(),
         }
 
     # ------------------------------------------------------------------
@@ -419,7 +480,7 @@ class RobotAdapter:
                 self._emit_exec_status(msg, "error")
                 return msg
 
-            clearance = [0, 0, 50, 0, 0, 0]  # V16: clearance só altera Z; RX/RY/RZ preservados
+            clearance = [0, 0, float(self.clearance_z_mm), 0, 0, 0]  # clearance só altera Z; RX/RY/RZ preservados
             ok, msg = self._fase_entrada(plan.entry.pose, clearance)
             if not ok:
                 self._emit_exec_status(msg, "error")
@@ -500,6 +561,20 @@ class RobotAdapter:
         ativo, mantém esse grupo até soltar seus botões, e só para o grupo que foi
         efetivamente liberado.
         """
+        # Se o controle manual estiver pausado para edição de parâmetros,
+        # ignora o joystick até a IHM liberar explicitamente.
+        if self.controle_manual_pausado:
+            self.grupo_ativo = None
+            if not self._pause_stop_emitido:
+                self.parar_grupo([0, 1, 2, 3, 4, 5])
+                self._pause_stop_emitido = True
+            for b in (4, 5, 6, 7, 8, 15):
+                try:
+                    self.last_btns[b] = joy.get_button(b)
+                except Exception:
+                    pass
+            return
+
         # Se houve erro de trajetória, bloqueia o jog até ACK do operador.
         if self.trajetoria_em_erro:
             self.grupo_ativo = None
@@ -763,6 +838,10 @@ class RobotAdapter:
                 self.diagnosticos["uptime_fonte"] = "backend"
             self.diagnosticos["executando_trajetoria"] = self.executando_trajetoria
             self.diagnosticos["saida_digital_ativa"] = self.saida_digital_ativa
+            self.diagnosticos["controle_manual_pausado"] = self.controle_manual_pausado
+            self.diagnosticos["clearance_z_mm"] = float(self.clearance_z_mm)
+            self.diagnosticos["jog_linear_mm_s"] = float(self.MAX_SPD_LINEAR)
+            self.diagnosticos["jog_rot_rad_s"] = float(self.MAX_SPD_ROTAT)
 
         if self.modo_simulacao:
             with self._state_lock:
