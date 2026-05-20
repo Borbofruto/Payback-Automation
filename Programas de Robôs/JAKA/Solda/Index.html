@@ -352,6 +352,8 @@ let offset_x = 400;
 let offset_y = 320;
 let telaAtual = 'trajetoria';
 let estadoLocal = { tcp: [0,0,0,0,0,0], pontos: [] };
+let recebeuTelemetriaReal = false;
+let ultimoDiagnosticoMs = 0;
 
 function resizeCanvas() {
   const rect = canvas.parentElement.getBoundingClientRect();
@@ -400,6 +402,10 @@ if (socket) {
       badge.innerHTML = '<span class="dot"></span> Robô conectado';
     }
 
+    if (dados.diagnosticos) {
+      atualizarDiagnosticosReais(dados.diagnosticos);
+    }
+
     if (telaAtual === 'trajetoria') desenharVisualizacao();
   });
 
@@ -407,6 +413,10 @@ if (socket) {
     const pontos = dados && Array.isArray(dados.pontos) ? dados.pontos : [];
     estadoLocal.pontos = pontos;
     renderizarListaPontos(pontos);
+    if (dados.diagnosticos) {
+      atualizarDiagnosticosReais(dados.diagnosticos);
+    }
+
     if (telaAtual === 'trajetoria') desenharVisualizacao();
   });
 }
@@ -668,52 +678,96 @@ function inserirPontoManual(tipo) {
   });
 }
 
-// Simulação visual de telemetria para apresentação
-// Relógio corrigido: conta tempo real a partir do carregamento da página.
-// Usa performance.now() para evitar aceleração/desaceleração por intervalo irregular.
+// Telemetria visual.
+// Regra: se o backend mandar dados.diagnosticos, a tela usa valores reais do robô/backend.
+// Se o backend não estiver conectado, mantém simulação visual para apresentação.
 const relogioInicioMs = (window.performance && performance.now) ? performance.now() : Date.now();
 
 function formatarDuracao(segundosTotais) {
+  segundosTotais = Math.max(0, Math.floor(Number(segundosTotais) || 0));
   const hrs = Math.floor(segundosTotais / 3600).toString().padStart(2, '0');
   const mins = Math.floor((segundosTotais % 3600) / 60).toString().padStart(2, '0');
   const secs = Math.floor(segundosTotais % 60).toString().padStart(2, '0');
   return `${hrs}h ${mins}m ${secs}s`;
 }
 
-function atualizarRelogioTempoLigado() {
-  const agoraMs = (window.performance && performance.now) ? performance.now() : Date.now();
-  const segundosUptime = Math.max(0, Math.floor((agoraMs - relogioInicioMs) / 1000));
-  const uptime = document.getElementById('kpi-uptime');
-  if (uptime) uptime.innerText = formatarDuracao(segundosUptime);
+function atualizarBarraCorrente(j, valorAmpere) {
+  const corrente = Number(valorAmpere || 0);
+  const barFill = document.getElementById(`bar-j${j}`);
+  if (barFill) {
+    const pct = Math.max(0, Math.min(100, (Math.abs(corrente) / 8) * 100));
+    barFill.style.width = `${pct}%`;
+  }
+  const val = document.getElementById(`bar-v-j${j}`);
+  if (val) val.innerText = `${corrente.toFixed(2)} A`;
 }
 
-function atualizarIndicadoresDemo() {
-  atualizarRelogioTempoLigado();
+function atualizarGaugeTemperatura(j, valorTemp) {
+  const temp = Number(valorTemp || 0);
+  const gaugeCirc = document.getElementById(`g-j${j}`);
+  if (gaugeCirc) {
+    const grausGradiente = Math.max(0, Math.min(360, (temp / 100) * 360));
+    const corGauge = temp > 55 ? 'var(--wn)' : 'var(--ok)';
+    gaugeCirc.style.background = `conic-gradient(${corGauge} ${grausGradiente}deg, var(--bd) 0deg)`;
+  }
+  const gv = document.getElementById(`g-v-j${j}`);
+  if (gv) gv.innerText = `${temp.toFixed(1)}°C`;
+}
 
+function atualizarDiagnosticosReais(diag) {
+  recebeuTelemetriaReal = true;
+  ultimoDiagnosticoMs = Date.now();
+
+  const uptime = document.getElementById('kpi-uptime');
+  if (uptime && diag.uptime_segundos !== undefined) {
+    uptime.innerText = formatarDuracao(diag.uptime_segundos);
+    const fonte = diag.uptime_fonte ? `Fonte: ${diag.uptime_fonte}` : 'Fonte: backend';
+    uptime.title = fonte;
+  }
+
+  const emergencia = document.getElementById('kpi-emergencia');
+  if (emergencia) {
+    emergencia.innerText = diag.status_emergencia ? 'Ativa' : '0';
+  }
+
+  const saude = document.getElementById('kpi-saude');
+  if (saude) {
+    if (diag.status_emergencia) saude.innerText = 'E-STOP';
+    else if (diag.protective_stop) saude.innerText = 'Proteção';
+    else if (diag.codigo_erro && String(diag.codigo_erro) !== '0') saude.innerText = `Erro ${diag.codigo_erro}`;
+    else if (diag.telemetria_real) saude.innerText = 'Online';
+    else saude.innerText = 'Conectado';
+  }
+
+  const correntes = Array.isArray(diag.correntes) ? diag.correntes : [];
+  const temperaturas = Array.isArray(diag.temperaturas) ? diag.temperaturas : [];
   for (let j = 1; j <= 6; j++) {
-    const baseCorr = (Math.sin(Date.now() / 600 + j) * 1.5 + 2.5).toFixed(1);
-    const baseTemp = Math.floor(Math.sin(Date.now() / 2000 + j) * 4 + 38);
-
-    const barFill = document.getElementById(`bar-j${j}`);
-    if (barFill) {
-      const pct = (parseFloat(baseCorr) / 8) * 100;
-      barFill.style.width = `${pct}%`;
-      const val = document.getElementById(`bar-v-j${j}`);
-      if (val) val.innerText = `${baseCorr} A`;
-    }
-
-    const gaugeCirc = document.getElementById(`g-j${j}`);
-    if (gaugeCirc) {
-      const grausGradiente = (baseTemp / 100) * 360;
-      const corGauge = baseTemp > 43 ? 'var(--wn)' : 'var(--ok)';
-      gaugeCirc.style.background = `conic-gradient(${corGauge} ${grausGradiente}deg, var(--bd) 0deg)`;
-      const gv = document.getElementById(`g-v-j${j}`);
-      if (gv) gv.innerText = `${baseTemp}°C`;
-    }
+    atualizarBarraCorrente(j, correntes[j-1] || 0);
+    atualizarGaugeTemperatura(j, temperaturas[j-1] || 0);
   }
 }
 
-// Chamada imediata + intervalo. O relógio atualiza em tempo real; os indicadores continuam suaves.
+function atualizarIndicadoresDemo() {
+  // Se há telemetria real recente, não sobrescreve os valores vindos do backend.
+  if (recebeuTelemetriaReal && (Date.now() - ultimoDiagnosticoMs) < 2500) return;
+
+  const agoraMs = (window.performance && performance.now) ? performance.now() : Date.now();
+  const segundosUptime = Math.max(0, Math.floor((agoraMs - relogioInicioMs) / 1000));
+  const uptime = document.getElementById('kpi-uptime');
+  if (uptime) {
+    uptime.innerText = formatarDuracao(segundosUptime);
+    uptime.title = 'Fonte: simulação local da página';
+  }
+
+  for (let j = 1; j <= 6; j++) {
+    const baseCorr = Math.sin(Date.now() / 600 + j) * 1.5 + 2.5;
+    const baseTemp = Math.sin(Date.now() / 2000 + j) * 4 + 38;
+    atualizarBarraCorrente(j, baseCorr);
+    atualizarGaugeTemperatura(j, baseTemp);
+  }
+}
+
+// Chamada imediata + intervalo. Com backend conectado, os dados reais substituem a simulação.
 atualizarIndicadoresDemo();
 setInterval(atualizarIndicadoresDemo, 300);
 

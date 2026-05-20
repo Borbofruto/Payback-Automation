@@ -56,13 +56,33 @@ class RobotAdapter:
         # Diagnóstico / telemetria
         self.tempo_inicio_sistema = time.time()
         self.diagnosticos = {
+            # Dados principais exibidos na HMI
             "temperaturas": [32.5, 33.1, 31.8, 34.2, 32.9, 33.5],
             "correntes": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+            "tensoes": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+            "torques": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+
+            # Uptime: preferimos tempo interno do controlador/juntas quando disponível;
+            # se não vier pela JAKA, usamos o uptime do backend, que persiste ao refresh da página.
             "uptime_segundos": 0,
+            "backend_uptime_segundos": 0,
+            "robot_uptime_segundos": None,
+            "uptime_fonte": "backend",
+
+            # Estado do controlador / processo
             "status_emergencia": False,
+            "protective_stop": False,
+            "power_on": False,
+            "enabled": False,
+            "inpos": False,
             "codigo_erro": 0,
+            "controller_temperature": None,
+            "robot_average_voltage": None,
+            "robot_average_current": None,
             "executando_trajetoria": False,
             "saida_digital_ativa": False,
+            "telemetria_real": False,
+            "ultima_telemetria_real_ts": None,
         }
         self.contador_ciclos_telemetria = 0
 
@@ -150,6 +170,15 @@ class RobotAdapter:
                     print(f"[AVISO] enable_robot() retornou: {enable_ret}")
             except Exception as e:
                 print(f"[AVISO] Falha em enable_robot(): {e}")
+
+            # Solicita ao controlador que atualize os dados de status em intervalo menor.
+            # A SDK V2.1.7 documenta set_status_data_update_time_interval(ms).
+            try:
+                if hasattr(self.robot, "set_status_data_update_time_interval"):
+                    self.robot.set_status_data_update_time_interval(100)
+                    print("[ROBÔ] Intervalo de atualização de status configurado para 100 ms.")
+            except Exception as e:
+                print(f"[AVISO] Não foi possível configurar intervalo de status: {e}")
 
             self.ip_atual = ip
             self.modo_simulacao = False
@@ -729,8 +758,16 @@ class RobotAdapter:
             nonlocal joy
             while True:
                 try:
-                    # 1. Uptime / divisores
-                    self.diagnosticos["uptime_segundos"] = int(time.time() - self.tempo_inicio_sistema)
+                    # 1. Uptime / divisores.
+                    # O uptime fica no backend/robô, não na página HTML.
+                    backend_uptime = int(time.time() - self.tempo_inicio_sistema)
+                    self.diagnosticos["backend_uptime_segundos"] = backend_uptime
+                    if self.diagnosticos.get("robot_uptime_segundos") is None:
+                        self.diagnosticos["uptime_segundos"] = backend_uptime
+                        self.diagnosticos["uptime_fonte"] = "backend"
+                    else:
+                        self.diagnosticos["uptime_segundos"] = int(self.diagnosticos["robot_uptime_segundos"])
+                        self.diagnosticos["uptime_fonte"] = "robot"
                     self.diagnosticos["executando_trajetoria"] = self.executando_trajetoria
                     self.diagnosticos["saida_digital_ativa"] = self.saida_digital_ativa
                     self.contador_ciclos_telemetria += 1
@@ -790,7 +827,26 @@ class RobotAdapter:
         t.start()
 
     def _atualizar_diagnosticos_baixa_freq(self):
+        """Atualiza telemetria de diagnóstico.
+
+        A fonte principal é get_robot_status(), documentada na SDK Python V2.1.7.
+        O retorno de sucesso é (0, robotstatus), onde robotstatus tem 24 campos.
+        O campo 21 (índice 20 em Python) é robot_monitor_data, contendo:
+          [SCB major, SCB minor, temperatura do controlador,
+           tensão média, corrente média,
+           dados das 6 juntas]
+        Cada junta contém, conforme TCP Protocol/monitor_data:
+          [corrente instantânea, tensão instantânea, temperatura,
+           potência média, flutuação de corrente, ciclos acumulados,
+           tempo acumulado, ciclos após boot, tempo após boot, torque]
+        """
         if self.modo_simulacao:
+            backend_uptime = int(time.time() - self.tempo_inicio_sistema)
+            self.diagnosticos["uptime_segundos"] = backend_uptime
+            self.diagnosticos["backend_uptime_segundos"] = backend_uptime
+            self.diagnosticos["robot_uptime_segundos"] = None
+            self.diagnosticos["uptime_fonte"] = "simulacao/backend"
+            self.diagnosticos["telemetria_real"] = False
             for i in range(6):
                 fator_esforco = 1.8 if self.grupo_ativo is not None or self.executando_trajetoria else 0.1
                 self.diagnosticos["correntes"][i] = round(max(0.0, random.random() * fator_esforco), 2)
@@ -801,72 +857,173 @@ class RobotAdapter:
             return
 
         try:
-            # Mantido defensivo porque a forma exata do retorno varia por SDK/versão.
             status_res = self.robot.get_robot_status()
-            if status_res and len(status_res) > 1 and status_res[0] == 0:
-                data = status_res[1]
+            if not (status_res and len(status_res) > 1 and status_res[0] == 0):
+                return
 
-                if isinstance(data, dict):
-                    self.diagnosticos["status_emergencia"] = bool(data.get("estop", 0) or data.get("emergency_stop", 0))
-                    self.diagnosticos["codigo_erro"] = data.get("err_code", self.diagnosticos["codigo_erro"])
-
-                    # Caso algum SDK retorne monitor_data como dict/lista dentro do dict.
-                    monitor = data.get("robot_monitor_data") or data.get("monitor_data")
-                    self._extrair_monitor_data(monitor)
-
-                elif isinstance(data, (list, tuple)):
-                    # Manual SDK descreve get_robot_status como lista com múltiplos campos.
-                    # Tentamos extrair qualquer subestrutura plausível sem travar o loop.
-                    for item in data:
-                        self._extrair_monitor_data(item)
-
-            # Fallback opcional: se existir get_joint_status na binding, tenta ler.
-            if hasattr(self.robot, "get_joint_status"):
-                joint_res = self.robot.get_joint_status()
-                if joint_res and len(joint_res) > 1 and joint_res[0] == 0:
-                    self._extrair_monitor_data(joint_res[1])
+            status = status_res[1]
+            if isinstance(status, (list, tuple)):
+                self._extrair_status_sdk_lista(status)
+            elif isinstance(status, dict):
+                self._extrair_status_sdk_dict(status)
 
         except Exception as e:
-            print(f"[DIAG] Falha oculta na telemetria da SDK: {e}")
+            print(f"[DIAG] Falha ao ler telemetria real da SDK: {e}")
 
-    def _extrair_monitor_data(self, monitor):
+    @staticmethod
+    def _to_float(value, default=None):
+        try:
+            if value is None:
+                return default
+            return float(value)
+        except Exception:
+            return default
+
+    @staticmethod
+    def _to_bool(value):
+        try:
+            return bool(int(value))
+        except Exception:
+            return bool(value)
+
+    def _extrair_status_sdk_lista(self, status):
+        """Extrai campos do get_robot_status() no formato oficial de lista."""
+        try:
+            # Índices zero-based derivados da tabela da SDK:
+            # 0 errcode, 1 inpos, 2 power_on, 3 enabled, 5 protective_stop,
+            # 18 cart_position, 19 joint_position, 20 robot_monitor_data, 23 emergency_stop.
+            if len(status) > 0:
+                self.diagnosticos["codigo_erro"] = status[0]
+            if len(status) > 1:
+                self.diagnosticos["inpos"] = self._to_bool(status[1])
+            if len(status) > 2:
+                self.diagnosticos["power_on"] = self._to_bool(status[2])
+            if len(status) > 3:
+                self.diagnosticos["enabled"] = self._to_bool(status[3])
+            if len(status) > 5:
+                self.diagnosticos["protective_stop"] = self._to_bool(status[5])
+            if len(status) > 18 and isinstance(status[18], (list, tuple)) and len(status[18]) >= 6:
+                # Aproveita o status para atualizar TCP se vier no pacote.
+                self._set_tcp(status[18])
+            if len(status) > 20:
+                self._extrair_robot_monitor_data(status[20])
+            if len(status) > 23:
+                self.diagnosticos["status_emergencia"] = self._to_bool(status[23])
+        except Exception as e:
+            print(f"[DIAG] Erro interpretando get_robot_status(lista): {e}")
+
+    def _extrair_status_sdk_dict(self, status):
+        """Fallback para bindings/versões que retornem dicionário."""
+        try:
+            self.diagnosticos["codigo_erro"] = status.get("errcode", status.get("err_code", self.diagnosticos["codigo_erro"]))
+            self.diagnosticos["inpos"] = self._to_bool(status.get("inpos", self.diagnosticos["inpos"]))
+            self.diagnosticos["power_on"] = self._to_bool(status.get("power_on", self.diagnosticos["power_on"]))
+            self.diagnosticos["enabled"] = self._to_bool(status.get("enabled", self.diagnosticos["enabled"]))
+            self.diagnosticos["protective_stop"] = self._to_bool(status.get("protective_stop", self.diagnosticos["protective_stop"]))
+            self.diagnosticos["status_emergencia"] = self._to_bool(status.get("emergency_stop", status.get("estop", self.diagnosticos["status_emergencia"])))
+
+            cart = status.get("cart_position") or status.get("actual_position") or status.get("tcp")
+            if isinstance(cart, (list, tuple)) and len(cart) >= 6:
+                self._set_tcp(cart)
+
+            monitor = status.get("robot_monitor_data") or status.get("monitor_data")
+            self._extrair_robot_monitor_data(monitor)
+        except Exception as e:
+            print(f"[DIAG] Erro interpretando get_robot_status(dict): {e}")
+
+    def _extrair_robot_monitor_data(self, monitor):
+        """Extrai corrente/temperatura/torque/tensão de robot_monitor_data.
+
+        Formatos aceitos:
+        - formato oficial: [major, minor, cab_temp, avg_voltage, avg_current, joints]
+          onde joints = [[cur, volt, temp, power, fluct, cum_cycles, cum_time,
+                          boot_cycles, boot_time, torque], ... x6]
+        - alguns fallbacks defensivos para listas/dicts de versões diferentes.
+        """
         if monitor is None:
             return
 
-        # Caso lista de dicts por junta
-        if isinstance(monitor, list):
-            for idx in range(min(6, len(monitor))):
-                item = monitor[idx]
-                if isinstance(item, dict):
-                    temp = item.get("temperature", item.get("temp", None))
-                    cur = item.get("current", item.get("cur", None))
-                    if temp is not None:
-                        self.diagnosticos["temperaturas"][idx] = round(float(temp), 1)
-                    if cur is not None:
-                        self.diagnosticos["correntes"][idx] = round(float(cur), 2)
-            return
+        try:
+            # Formato oficial do TCP/SDK.
+            if isinstance(monitor, (list, tuple)) and len(monitor) >= 6:
+                cab_temp = self._to_float(monitor[2])
+                avg_voltage = self._to_float(monitor[3])
+                avg_current = self._to_float(monitor[4])
+                if cab_temp is not None:
+                    self.diagnosticos["controller_temperature"] = round(cab_temp, 1)
+                if avg_voltage is not None:
+                    self.diagnosticos["robot_average_voltage"] = round(avg_voltage, 2)
+                if avg_current is not None:
+                    self.diagnosticos["robot_average_current"] = round(avg_current, 2)
 
-        # Caso dict com vetores
-        if isinstance(monitor, dict):
-            temps = (
-                monitor.get("temperatures") or
-                monitor.get("joint_temperatures") or
-                monitor.get("temperature") or
-                monitor.get("temps")
-            )
-            currents = (
-                monitor.get("currents") or
-                monitor.get("joint_currents") or
-                monitor.get("current") or
-                monitor.get("curs")
-            )
+                joints = monitor[5]
+                if self._extrair_joints_monitor(joints):
+                    self.diagnosticos["telemetria_real"] = True
+                    self.diagnosticos["ultima_telemetria_real_ts"] = time.time()
+                return
 
-            if isinstance(temps, (list, tuple)):
-                for i in range(min(6, len(temps))):
-                    self.diagnosticos["temperaturas"][i] = round(float(temps[i]), 1)
-            if isinstance(currents, (list, tuple)):
-                for i in range(min(6, len(currents))):
-                    self.diagnosticos["correntes"][i] = round(float(currents[i]), 2)
+            # Fallback: dict com vetores.
+            if isinstance(monitor, dict):
+                self._extrair_status_sdk_dict({"monitor_data": monitor})
+        except Exception as e:
+            print(f"[DIAG] Erro extraindo robot_monitor_data: {e}")
+
+    def _extrair_joints_monitor(self, joints):
+        if joints is None:
+            return False
+
+        parsed = False
+        robot_boot_times = []
+
+        # Caso esperado: lista com 6 listas, cada uma com ao menos [current, voltage, temperature].
+        if isinstance(joints, (list, tuple)) and len(joints) >= 6:
+            # Se vier flat com 60 valores, divide em 6 blocos de 10.
+            if all(not isinstance(x, (list, tuple, dict)) for x in joints) and len(joints) >= 60:
+                joint_rows = [joints[i * 10:(i + 1) * 10] for i in range(6)]
+            else:
+                joint_rows = list(joints[:6])
+
+            for idx, row in enumerate(joint_rows[:6]):
+                if isinstance(row, dict):
+                    cur = self._to_float(row.get("current", row.get("cur")))
+                    volt = self._to_float(row.get("voltage", row.get("volt")))
+                    temp = self._to_float(row.get("temperature", row.get("temp")))
+                    torque = self._to_float(row.get("torque"))
+                    boot_time = self._to_float(row.get("running_time_after_boot", row.get("boot_time")))
+                elif isinstance(row, (list, tuple)):
+                    cur = self._to_float(row[0] if len(row) > 0 else None)
+                    volt = self._to_float(row[1] if len(row) > 1 else None)
+                    temp = self._to_float(row[2] if len(row) > 2 else None)
+                    torque = self._to_float(row[9] if len(row) > 9 else None)
+                    boot_time = self._to_float(row[8] if len(row) > 8 else None)
+                else:
+                    continue
+
+                if cur is not None:
+                    self.diagnosticos["correntes"][idx] = round(cur, 2)
+                    parsed = True
+                if volt is not None:
+                    self.diagnosticos["tensoes"][idx] = round(volt, 2)
+                    parsed = True
+                if temp is not None:
+                    self.diagnosticos["temperaturas"][idx] = round(temp, 1)
+                    parsed = True
+                if torque is not None:
+                    self.diagnosticos["torques"][idx] = round(torque, 2)
+                    parsed = True
+                if boot_time is not None and boot_time >= 0:
+                    robot_boot_times.append(boot_time)
+
+        if robot_boot_times:
+            # Usa o maior tempo entre juntas como proxy de tempo interno após boot.
+            # A documentação nomeia o campo como running time after this boot, mas não garante unidade;
+            # em uso normal espera-se segundos. Se vier absurdo, o frontend ainda recebe a fonte marcada.
+            robot_uptime = max(robot_boot_times)
+            self.diagnosticos["robot_uptime_segundos"] = int(robot_uptime)
+            self.diagnosticos["uptime_segundos"] = int(robot_uptime)
+            self.diagnosticos["uptime_fonte"] = "robot_monitor_data.joint_running_time_after_boot"
+
+        return parsed
 
     def _processar_joystick(self, joy):
         # Troca de orientação (L3 e R3)
