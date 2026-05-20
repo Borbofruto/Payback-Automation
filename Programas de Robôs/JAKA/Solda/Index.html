@@ -307,7 +307,7 @@ canvas{width:100%;height:100%;display:block;background:#fff;position:relative;z-
           <div class="card">
             <div class="cttl"><i class="fa-solid fa-circle-info"></i> Estado do módulo</div>
             <div class="trend-container">
-              <div class="trend-item"><div class="trend-text"><strong>Telemetria visual</strong><span>Simulada no frontend até reconexão total com backend.</span></div><span class="trend-badge ok">Demo</span></div>
+              <div class="trend-item"><div class="trend-text"><strong>Telemetria das juntas</strong><span id="telemetry-detail">Aguardando fonte real do robô.</span></div><span id="telemetry-state" class="trend-badge attention">Placeholder</span></div>
               <div class="trend-item"><div class="trend-text"><strong>Socket.IO</strong><span>Recebendo estado do backend Python atual quando conectado.</span></div><span id="socket-state" class="trend-badge attention">Aguardando</span></div>
             </div>
           </div>
@@ -353,6 +353,8 @@ let offset_y = 320;
 let telaAtual = 'trajetoria';
 let estadoLocal = { tcp: [0,0,0,0,0,0], pontos: [] };
 let recebeuTelemetriaReal = false;
+let recebeuDiagnosticoBackend = false;
+let socketConectado = false;
 let ultimoDiagnosticoMs = 0;
 
 function resizeCanvas() {
@@ -715,8 +717,32 @@ function atualizarGaugeTemperatura(j, valorTemp) {
 }
 
 function atualizarDiagnosticosReais(diag) {
-  recebeuTelemetriaReal = true;
+  recebeuDiagnosticoBackend = true;
+  recebeuTelemetriaReal = !!diag.telemetria_real;
   ultimoDiagnosticoMs = Date.now();
+
+  const telemetryState = document.getElementById('telemetry-state');
+  const telemetryDetail = document.getElementById('telemetry-detail');
+  const origem = diag.telemetria_origem || (diag.telemetria_real ? 'backend' : 'placeholder');
+  const status = diag.telemetria_status || '';
+  if (telemetryState) {
+    if (diag.telemetria_real) {
+      telemetryState.className = 'trend-badge ok';
+      telemetryState.innerText = 'Real';
+    } else if (diag.uptime_fonte && String(diag.uptime_fonte).includes('simul')) {
+      telemetryState.className = 'trend-badge attention';
+      telemetryState.innerText = 'Simulado';
+    } else {
+      telemetryState.className = 'trend-badge attention';
+      telemetryState.innerText = 'Placeholder';
+    }
+    telemetryState.title = `${origem} · ${status}`;
+  }
+  if (telemetryDetail) {
+    telemetryDetail.innerText = diag.telemetria_real
+      ? `Fonte real: ${origem}.`
+      : `Sem fonte real confirmada. ${status || 'Valores podem ser placeholder/último estado.'}`;
+  }
 
   const uptime = document.getElementById('kpi-uptime');
   if (uptime && diag.uptime_segundos !== undefined) {
@@ -748,8 +774,9 @@ function atualizarDiagnosticosReais(diag) {
 }
 
 function atualizarIndicadoresDemo() {
-  // Se há telemetria real recente, não sobrescreve os valores vindos do backend.
-  if (recebeuTelemetriaReal && (Date.now() - ultimoDiagnosticoMs) < 2500) return;
+  // Se há backend conectado mandando diagnóstico, nunca sobrescreve com simulação local.
+  // Assim a tela não mascara falha de telemetria real como se fosse dado do robô.
+  if (socketConectado && recebeuDiagnosticoBackend && (Date.now() - ultimoDiagnosticoMs) < 4000) return;
 
   const agoraMs = (window.performance && performance.now) ? performance.now() : Date.now();
   const segundosUptime = Math.max(0, Math.floor((agoraMs - relogioInicioMs) / 1000));
@@ -758,6 +785,10 @@ function atualizarIndicadoresDemo() {
     uptime.innerText = formatarDuracao(segundosUptime);
     uptime.title = 'Fonte: simulação local da página';
   }
+  const telemetryState = document.getElementById('telemetry-state');
+  const telemetryDetail = document.getElementById('telemetry-detail');
+  if (telemetryState) { telemetryState.className = 'trend-badge attention'; telemetryState.innerText = 'Demo'; }
+  if (telemetryDetail) telemetryDetail.innerText = 'Sem backend conectado. Valores simulados localmente.';
 
   for (let j = 1; j <= 6; j++) {
     const baseCorr = Math.sin(Date.now() / 600 + j) * 1.5 + 2.5;

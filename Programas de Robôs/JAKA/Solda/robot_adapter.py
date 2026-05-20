@@ -15,6 +15,8 @@ import pygame
 import threading
 import copy
 import random
+import socket
+import json
 
 SDK_DIR = r"C:\jakaAPI_V2.1.7stable\SDK2.1.7\Windows\python3\x64"
 
@@ -82,9 +84,14 @@ class RobotAdapter:
             "executando_trajetoria": False,
             "saida_digital_ativa": False,
             "telemetria_real": False,
+            "telemetria_origem": "placeholder",
+            "telemetria_status": "Sem telemetria real confirmada",
             "ultima_telemetria_real_ts": None,
         }
         self.contador_ciclos_telemetria = 0
+        self._monitor_tcp_thread = None
+        self._monitor_tcp_stop = threading.Event()
+        self._monitor_tcp_connected = False
 
         # Debounce / retenção do botão 5
         self.b5_press_time = None
@@ -182,6 +189,7 @@ class RobotAdapter:
 
             self.ip_atual = ip
             self.modo_simulacao = False
+            self._start_monitor_tcp10000()
             print(f"[ROBÔ] Conectado e habilitado em {ip}.")
             return True
 
@@ -189,6 +197,162 @@ class RobotAdapter:
             print(f"[ERRO] Falha ao conectar no robô: {e}")
             self.modo_simulacao = True
             return False
+
+
+    # ----------------------------------------------------------------------
+    # Telemetria TCP 10000 — fonte preferencial para corrente/temperatura
+    # ----------------------------------------------------------------------
+    def _start_monitor_tcp10000(self):
+        """Inicia leitura independente da porta 10000 do controlador JAKA.
+
+        A documentação TCP separa comandos na porta 10001 e monitoramento na porta
+        10000. Usar essa porta evita confundir dados simulados/SDK e aproxima a HMI
+        do que o CoboPi/APP mostra na tela de monitoramento.
+        """
+        if self.modo_simulacao or not self.ip_atual:
+            return
+        if self._monitor_tcp_thread and self._monitor_tcp_thread.is_alive():
+            return
+        self._monitor_tcp_stop.clear()
+        self._monitor_tcp_thread = threading.Thread(target=self._monitor_tcp10000_loop, daemon=True)
+        self._monitor_tcp_thread.start()
+
+    @staticmethod
+    def _extrair_jsons_do_buffer(buffer):
+        """Extrai objetos JSON de um buffer sem depender de quebra de linha.
+
+        A porta 10000 pode enviar JSONs concatenados ou com quebras. Este parser por
+        balanceamento de chaves é mais tolerante que split('\n').
+        """
+        objs = []
+        start = None
+        depth = 0
+        in_str = False
+        esc = False
+        last_end = 0
+        for i, ch in enumerate(buffer):
+            if in_str:
+                if esc:
+                    esc = False
+                elif ch == '\\':
+                    esc = True
+                elif ch == '"':
+                    in_str = False
+                continue
+            if ch == '"':
+                in_str = True
+            elif ch == '{':
+                if depth == 0:
+                    start = i
+                depth += 1
+            elif ch == '}':
+                if depth > 0:
+                    depth -= 1
+                    if depth == 0 and start is not None:
+                        objs.append(buffer[start:i+1])
+                        last_end = i + 1
+                        start = None
+        return objs, buffer[last_end:]
+
+    def _monitor_tcp10000_loop(self):
+        while not self._monitor_tcp_stop.is_set():
+            ip = self.ip_atual
+            if not ip or self.modo_simulacao:
+                time.sleep(1.0)
+                continue
+            sock = None
+            try:
+                print(f"[TCP10000] Conectando em {ip}:10000 para telemetria real...")
+                sock = socket.create_connection((ip, 10000), timeout=3.0)
+                sock.settimeout(1.0)
+                self._monitor_tcp_connected = True
+                buffer = ""
+                while not self._monitor_tcp_stop.is_set() and not self.modo_simulacao:
+                    try:
+                        chunk = sock.recv(8192)
+                    except socket.timeout:
+                        continue
+                    if not chunk:
+                        raise ConnectionError("socket fechado pelo controlador")
+                    text = chunk.decode("utf-8", errors="ignore")
+                    buffer += text
+                    # proteção contra crescimento infinito se chegar lixo
+                    if len(buffer) > 2_000_000:
+                        buffer = buffer[-200_000:]
+                    jsons, buffer = self._extrair_jsons_do_buffer(buffer)
+                    for raw in jsons:
+                        try:
+                            payload = json.loads(raw)
+                        except Exception:
+                            continue
+                        self._processar_payload_tcp10000(payload)
+            except Exception as e:
+                self._monitor_tcp_connected = False
+                if not self.modo_simulacao:
+                    self.diagnosticos["telemetria_status"] = f"TCP10000 indisponível: {e}"
+                time.sleep(1.0)
+            finally:
+                try:
+                    if sock:
+                        sock.close()
+                except Exception:
+                    pass
+                self._monitor_tcp_connected = False
+
+    def _processar_payload_tcp10000(self, payload):
+        """Interpreta payloads vindos da porta 10000.
+
+        Formatos observados/documentados variam por versão. Procuramos campos em
+        root, data e result para tolerar envelopes diferentes.
+        """
+        if not isinstance(payload, dict):
+            return
+        candidates = [payload]
+        for key in ("data", "result", "res", "state"):
+            val = payload.get(key)
+            if isinstance(val, dict):
+                candidates.append(val)
+
+        monitor = None
+        actual_position = None
+        emergency_stop = None
+        protective_stop = None
+        enabled = None
+        inpos = None
+        dout = None
+
+        for obj in candidates:
+            monitor = monitor or obj.get("monitor_data") or obj.get("monitorData") or obj.get("robot_monitor_data")
+            actual_position = actual_position or obj.get("actual_position") or obj.get("cart_position") or obj.get("tcp")
+            emergency_stop = obj.get("emergency_stop", emergency_stop)
+            protective_stop = obj.get("protective_stop", protective_stop)
+            enabled = obj.get("enabled", enabled)
+            inpos = obj.get("inpos", inpos)
+            dout = obj.get("dout", dout)
+
+        if isinstance(actual_position, (list, tuple)) and len(actual_position) >= 6:
+            self._set_tcp(actual_position[:6])
+        if emergency_stop is not None:
+            self.diagnosticos["status_emergencia"] = self._to_bool(emergency_stop)
+        if protective_stop is not None:
+            self.diagnosticos["protective_stop"] = self._to_bool(protective_stop)
+        if enabled is not None:
+            self.diagnosticos["enabled"] = self._to_bool(enabled)
+        if inpos is not None:
+            self.diagnosticos["inpos"] = self._to_bool(inpos)
+        if isinstance(dout, (list, tuple)) and len(dout) > 1:
+            try:
+                self.saida_digital_ativa = bool(dout[1])
+                self.diagnosticos["saida_digital_ativa"] = self.saida_digital_ativa
+            except Exception:
+                pass
+
+        if monitor is not None:
+            if self._extrair_robot_monitor_data(monitor, origem="tcp10000"):
+                self.diagnosticos["telemetria_real"] = True
+                self.diagnosticos["telemetria_origem"] = "TCP 10000"
+                self.diagnosticos["telemetria_status"] = "Telemetria real via porta 10000"
+                self.diagnosticos["ultima_telemetria_real_ts"] = time.time()
 
     # ----------------------------------------------------------------------
     # I/O
@@ -596,35 +760,116 @@ class RobotAdapter:
         print("[SEQ] Entrada concluída: DO ON confirmada. Iniciando trajetória principal.")
         return True, "Entrada concluída."
 
-    def _fase_trajetoria_principal(self, pontos):
-        """Trajetória comum para MoveL e MoveC, sem I/O no meio."""
-        i = 1  # P1 já foi consumido pela fase de entrada
-        while i < len(pontos):
-            tipo, pose = pontos[i]
+    def _validar_e_planejar_trajetoria(self, pontos):
+        """Valida e converte pontos L/C em segmentos executáveis.
 
-            # Watchdog leve antes de cada novo comando: não inicia próximo segmento se DO caiu.
+        Semântica adotada para evitar o bug de mistura linear/circular:
+        - A trajetória completa precisa de pelo menos 2 pontos.
+        - Pontos L são alvos lineares individuais.
+        - Um bloco de pontos C representa movimento circular.
+        - Cada bloco C precisa ter 3, 5, 7... pontos: start, mid, end, mid, end...
+        - Se um bloco C começa depois de um bloco L, o primeiro C é o início do arco;
+          portanto o robô faz um MoveL até esse primeiro C antes do MoveC.
+
+        Isso impede que o primeiro ponto circular seja usado indevidamente como mid_pos.
+        """
+        if len(pontos) < 2:
+            return None, "Necessário ao menos 2 pontos para iniciar."
+
+        norm = []
+        for idx, p in enumerate(pontos):
+            if not isinstance(p, (list, tuple)) or len(p) < 2:
+                return None, f"Ponto #{idx+1} inválido."
+            tipo = str(p[0]).upper()
+            if tipo not in ("L", "C"):
+                return None, f"Tipo do ponto #{idx+1} inválido: {tipo}. Use L ou C."
+            pose = list(p[1])
+            if len(pose) < 6:
+                return None, f"Pose do ponto #{idx+1} inválida: esperado [x,y,z,rx,ry,rz]."
+            norm.append((tipo, pose))
+
+        segmentos = []
+        i = 0
+        n = len(norm)
+        while i < n:
+            tipo = norm[i][0]
+
+            if tipo == "L":
+                start = i
+                while i < n and norm[i][0] == "L":
+                    i += 1
+                for idx in range(start, i):
+                    # O primeiro ponto da trajetória já foi consumido pela fase de entrada.
+                    if idx == 0:
+                        continue
+                    segmentos.append(("L", norm[idx][1], idx))
+                continue
+
+            # Bloco circular C...
+            start = i
+            while i < n and norm[i][0] == "C":
+                i += 1
+            count = i - start
+
+            if count < 3:
+                faltam = 3 - count
+                return None, (
+                    f"Bloco circular iniciado no ponto #{start+1} tem {count} ponto(s) C. "
+                    f"Adicione mais {faltam} ponto(s) circular(es): início, passagem e fim."
+                )
+            if count % 2 == 0:
+                return None, (
+                    f"Bloco circular iniciado no ponto #{start+1} tem {count} pontos C. "
+                    "Use 3, 5, 7... pontos C: início, passagem/fim, passagem/fim."
+                )
+
+            # Se o bloco C começa depois da trajetória já estar em outro ponto, o primeiro C
+            # é o início do arco e precisa ser atingido linearmente antes do MoveC.
+            if start > 0:
+                segmentos.append(("L", norm[start][1], start))
+
+            # Se start == 0, a fase de entrada já colocou o TCP no primeiro C.
+            j = start + 1
+            while j + 1 < i:
+                mid_pose = norm[j][1]
+                end_pose = norm[j + 1][1]
+                segmentos.append(("C", mid_pose, end_pose, j, j + 1))
+                j += 2
+
+        if not segmentos:
+            return None, "Trajetória sem segmento executável. Adicione pelo menos um destino após o ponto inicial."
+
+        return segmentos, "OK"
+
+    def _fase_trajetoria_principal(self, pontos, segmentos=None):
+        """Executa segmentos já validados, sem I/O no meio."""
+        if segmentos is None:
+            segmentos, msg = self._validar_e_planejar_trajetoria(pontos)
+            if segmentos is None:
+                return False, msg
+
+        for seg in segmentos:
             do_val = self.ler_saida_digital()
             if do_val is not None and not do_val:
                 self.parar_movimento_processo()
                 return False, "Saída digital desligada antes/durante a trajetória principal. Movimento abortado."
 
-            if tipo == "C" and i + 1 < len(pontos) and pontos[i + 1][0] == "C":
-                mid_pose = list(pontos[i][1])
-                end_pose = list(pontos[i + 1][1])
-                print(f"[SEQ] Trajetória: MoveC mid={mid_pose[:3]} end={end_pose[:3]}.")
-                if not self._circular_move_nao_bloqueante(end_pose=end_pose, mid_pose=mid_pose, vel=self.vel_reproducao):
-                    self.parar_movimento_processo()
-                    return False, "Falha ao enviar MoveC. Movimento abortado."
-                i += 2
-            else:
-                print(f"[SEQ] Trajetória: MoveL {list(pose)[:3]}.")
+            if seg[0] == "L":
+                _, pose, idx = seg
+                print(f"[SEQ] Trajetória: MoveL para ponto #{idx+1} {list(pose)[:3]}.")
                 if not self._linear_move_nao_bloqueante(list(pose), self.vel_reproducao):
                     self.parar_movimento_processo()
-                    return False, "Falha ao enviar MoveL. Movimento abortado."
-                i += 1
+                    return False, f"Falha ao enviar MoveL para ponto #{idx+1}. Movimento abortado."
 
-            # Pequeno yield para não empurrar todos os comandos no mesmo instante e dar tempo
-            # ao controlador/telemetria de atualizar estado de processo.
+            elif seg[0] == "C":
+                _, mid_pose, end_pose, mid_idx, end_idx = seg
+                print(f"[SEQ] Trajetória: MoveC mid ponto #{mid_idx+1} {mid_pose[:3]} end ponto #{end_idx+1} {end_pose[:3]}.")
+                if not self._circular_move_nao_bloqueante(end_pos=list(end_pose), mid_pose=list(mid_pose), vel=self.vel_reproducao):
+                    self.parar_movimento_processo()
+                    return False, f"Falha ao enviar MoveC pontos #{mid_idx+1}/#{end_idx+1}. Movimento abortado."
+            else:
+                return False, f"Segmento desconhecido: {seg[0]}"
+
             time.sleep(0.02)
 
         return True, "Trajetória principal enviada."
@@ -679,8 +924,9 @@ class RobotAdapter:
         pontos = self._get_pontos_snapshot()
 
         try:
-            if len(pontos) < 2:
-                return "Necessário ao menos 2 pontos para iniciar."
+            segmentos, valid_msg = self._validar_e_planejar_trajetoria(pontos)
+            if segmentos is None:
+                return valid_msg
 
             h_clearance = [0, 0, 50, 0, 0, 0]
             p1_real = list(pontos[0][1])
@@ -693,7 +939,7 @@ class RobotAdapter:
             if not ok:
                 return msg
 
-            ok, msg = self._fase_trajetoria_principal(pontos)
+            ok, msg = self._fase_trajetoria_principal(pontos, segmentos=segmentos)
             if not ok:
                 self.set_saida_digital(False, confirmar=False)
                 return msg
@@ -808,7 +1054,14 @@ class RobotAdapter:
                             self.grupo_ativo = None
                             joy = None
 
-                    # 5. Socket payload
+                    # 5. Marca telemetria real como indisponível se ficar velha.
+                    last_real = self.diagnosticos.get("ultima_telemetria_real_ts")
+                    if not self.modo_simulacao and (not last_real or (time.time() - last_real) > 5.0):
+                        self.diagnosticos["telemetria_real"] = False
+                        if self.diagnosticos.get("telemetria_origem") != "TCP 10000":
+                            self.diagnosticos["telemetria_status"] = "Sem telemetria real recente"
+
+                    # 6. Socket payload
                     if self.on_state_update:
                         self.on_state_update({
                             "tcp": self._copy_tcp(),
@@ -847,6 +1100,8 @@ class RobotAdapter:
             self.diagnosticos["robot_uptime_segundos"] = None
             self.diagnosticos["uptime_fonte"] = "simulacao/backend"
             self.diagnosticos["telemetria_real"] = False
+            self.diagnosticos["telemetria_origem"] = "Simulação"
+            self.diagnosticos["telemetria_status"] = "Placeholder/simulação local"
             for i in range(6):
                 fator_esforco = 1.8 if self.grupo_ativo is not None or self.executando_trajetoria else 0.1
                 self.diagnosticos["correntes"][i] = round(max(0.0, random.random() * fator_esforco), 2)
@@ -854,6 +1109,11 @@ class RobotAdapter:
             return
 
         if not self.robot:
+            return
+
+        # Se a porta 10000 atualizou recentemente, ela é a fonte preferencial.
+        last_real = self.diagnosticos.get("ultima_telemetria_real_ts")
+        if self.diagnosticos.get("telemetria_origem") == "TCP 10000" and last_real and (time.time() - last_real) < 2.0:
             return
 
         try:
@@ -931,7 +1191,7 @@ class RobotAdapter:
         except Exception as e:
             print(f"[DIAG] Erro interpretando get_robot_status(dict): {e}")
 
-    def _extrair_robot_monitor_data(self, monitor):
+    def _extrair_robot_monitor_data(self, monitor, origem="SDK get_robot_status"):
         """Extrai corrente/temperatura/torque/tensão de robot_monitor_data.
 
         Formatos aceitos:
@@ -941,7 +1201,7 @@ class RobotAdapter:
         - alguns fallbacks defensivos para listas/dicts de versões diferentes.
         """
         if monitor is None:
-            return
+            return False
 
         try:
             # Formato oficial do TCP/SDK.
@@ -959,14 +1219,19 @@ class RobotAdapter:
                 joints = monitor[5]
                 if self._extrair_joints_monitor(joints):
                     self.diagnosticos["telemetria_real"] = True
+                    self.diagnosticos["telemetria_origem"] = origem
+                    self.diagnosticos["telemetria_status"] = f"Telemetria real via {origem}"
                     self.diagnosticos["ultima_telemetria_real_ts"] = time.time()
-                return
+                    return True
+                return False
 
             # Fallback: dict com vetores.
             if isinstance(monitor, dict):
                 self._extrair_status_sdk_dict({"monitor_data": monitor})
+                return bool(self.diagnosticos.get("telemetria_real"))
         except Exception as e:
             print(f"[DIAG] Erro extraindo robot_monitor_data: {e}")
+        return False
 
     def _extrair_joints_monitor(self, joints):
         if joints is None:

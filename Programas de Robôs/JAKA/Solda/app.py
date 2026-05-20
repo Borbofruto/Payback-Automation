@@ -1,5 +1,5 @@
 # app.py
-# Backend Flask/Socket.IO — IHM Solda Payback — V10
+# Backend Flask/Socket.IO — IHM Solda Payback — V12
 # Mantém o HTML atual e conecta com robot_adapter.py.
 
 # CRÍTICO: eventlet precisa ser importado e aplicar monkey_patch antes dos demais imports de rede/thread.
@@ -80,6 +80,16 @@ def gerenciar_execucao_segura():
 def executar_trajetoria():
     if adapter.executando_trajetoria:
         return jsonify({'status': 'error', 'message': 'Já existe uma trajetória em execução.'}), 409
+
+    # Validação síncrona antes de enviar qualquer comando ao robô.
+    # Isso evita casos perigosos de bloco circular incompleto ou mistura L/C ambígua.
+    try:
+        pontos = adapter._get_pontos_snapshot()
+        segmentos, msg = adapter._validar_e_planejar_trajetoria(pontos)
+        if segmentos is None:
+            return jsonify({'status': 'error', 'message': msg}), 400
+    except Exception as e:
+        return jsonify({'status': 'error', 'message': f'Falha validando trajetória: {e}'}), 400
 
     eventlet.spawn(gerenciar_execucao_segura)
     eventlet.sleep(0.01)
