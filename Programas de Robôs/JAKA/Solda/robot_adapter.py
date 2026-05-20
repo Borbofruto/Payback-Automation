@@ -190,7 +190,7 @@ class RobotAdapter:
             print(f"[DO] Falha lendo saída digital: {e}")
         return None
 
-    def set_saida_digital(self, ativo: bool, confirmar=True, timeout_s=2.0) -> bool:
+    def set_saida_digital(self, ativo: bool, confirmar=False, timeout_s=2.0) -> bool:
         ativo = bool(ativo)
         if self.modo_simulacao:
             self.saida_digital_ativa = ativo
@@ -238,22 +238,23 @@ class RobotAdapter:
             print(f"[STOP] motion_abort falhou: {e}")
             return False
 
-    def _linear_move_blocking(self, pose, vel, confirm=True, name="MoveL") -> bool:
+    def _linear_move_blocking(self, pose, vel, confirm=False, name="MoveL") -> bool:
+        """MoveL bloqueante nativo da SDK, sem barreira extra por TCP.
+
+        V13 tinha confirmação adicional via TCP/is_in_pos depois do movimento. Isso
+        gerou delays grandes entre comandos no robô real. Aqui voltamos para o
+        comportamento enxuto: se a chamada bloqueante da SDK retornou OK, seguimos.
+        """
         pose = list(pose)
         if self.modo_simulacao:
             self._set_tcp(pose)
-            time.sleep(0.2)
+            time.sleep(0.05)
             return True
         try:
             ret = self.driver.linear_move(pose, 0, True, vel)
             if ret is not None and not self._ret_ok(ret):
                 print(f"[{name}] retorno JAKA: {ret}")
                 return False
-            if confirm:
-                ok = self.aguardar_chegada_por_tcp(pose, tol_mm=1.5, timeout_s=60.0, ciclos_estaveis=8, exigir_inpos=True)
-                if not ok:
-                    print(f"[{name}] timeout confirmando chegada em {pose[:3]}")
-                    return False
             return True
         except Exception as e:
             print(f"[{name}] Falha: {e}")
@@ -294,17 +295,23 @@ class RobotAdapter:
             return False
 
     def _fase_entrada(self, p1_pose, clearance):
+        """Entrada comum e enxuta.
+
+        Ordem mantida:
+        DO off -> ponto alto -> P1 -> DO on.
+        Sem barreiras extras por TCP para não introduzir delays artificiais.
+        """
         p1 = list(p1_pose)
         p1_aprox = [a + b for a, b in zip(p1, clearance)]
-        if not self.set_saida_digital(False, confirmar=True):
-            return False, "Falha garantindo saída digital desligada antes da entrada."
-        if not self._linear_move_blocking(p1_aprox, self.vel_aproximacao, name="Entrada alto"):
+
+        if not self.set_saida_digital(False, confirmar=False):
+            return False, "Falha desligando saída digital antes da entrada."
+        if not self._linear_move_blocking(p1_aprox, self.vel_aproximacao, confirm=False, name="Entrada alto"):
             return False, "Falha indo ao ponto alto de entrada."
-        if not self._linear_move_blocking(p1, self.vel_aproximacao, name="Entrada P1"):
+        if not self._linear_move_blocking(p1, self.vel_aproximacao, confirm=False, name="Entrada P1"):
             return False, "Falha descendo ao primeiro ponto."
-        time.sleep(0.12)
-        if not self.set_saida_digital(True, confirmar=True):
-            return False, "Falha confirmando saída digital ligada no primeiro ponto."
+        if not self.set_saida_digital(True, confirmar=False):
+            return False, "Falha ligando saída digital no primeiro ponto."
         return True, "Entrada concluída."
 
     def _executar_segmentos(self, plan) -> (bool, str):
@@ -321,16 +328,17 @@ class RobotAdapter:
                 if not self._circular_move_nonblocking(seg.mid.pose, seg.end.pose, self.vel_reproducao):
                     self.parar_movimento_processo()
                     return False, f"Falha enviando MoveC pontos #{seg.mid.index + 1}/#{seg.end.index + 1}."
-            time.sleep(0.03)
+            time.sleep(0.005)
         return True, "Trajetória principal enviada."
 
     def _fase_saida(self, last_pose, clearance):
+        """Saída comum e enxuta: DO off -> subida sobre o último ponto."""
         last = list(last_pose)
         p_saida = [a + b for a, b in zip(last, clearance)]
-        if not self.set_saida_digital(False, confirmar=True):
+        if not self.set_saida_digital(False, confirmar=False):
             self.parar_movimento_processo()
-            return False, "Falha confirmando saída digital desligada no fim."
-        if not self._linear_move_blocking(p_saida, self.vel_aproximacao, name="Saída"):
+            return False, "Falha desligando saída digital no fim."
+        if not self._linear_move_blocking(p_saida, self.vel_aproximacao, confirm=False, name="Saída"):
             return False, "Falha no movimento de saída."
         return True, "Saída concluída."
 
@@ -361,7 +369,7 @@ class RobotAdapter:
                 self._emit_exec_status(msg, "error")
                 return msg
 
-            if not self.aguardar_chegada_por_tcp(plan.exit.pose, tol_mm=2.0, timeout_s=120.0, ciclos_estaveis=8, exigir_inpos=True):
+            if not self.aguardar_chegada_por_tcp(plan.exit.pose, tol_mm=2.0, timeout_s=120.0, ciclos_estaveis=2, exigir_inpos=False):
                 self.set_saida_digital(False, confirmar=False)
                 msg = "Timeout aguardando chegada ao último ponto. Saída digital desligada por segurança."
                 self._emit_exec_status(msg, "error")
