@@ -1,9 +1,11 @@
 # robot_adapter.py
 # Backend JAKA — IHM Solda Payback
-# Versão híbrida:
+# Versão híbrida V10:
 #   - Entrada/saída com movimentos bloqueantes para sincronizar DO.
 #   - Trajetória principal com movimentos não bloqueantes para manter telemetria TCP fluindo.
 #   - Fim da trajetória aguardado pela posição TCP atualizada no loop de telemetria.
+#   - Saída digital confirmada por leitura de DO antes/depois da trajetória.
+#   - Watchdog interrompe movimento se a DO cair durante a trajetória principal.
 
 import sys
 import os
@@ -46,6 +48,8 @@ class RobotAdapter:
         # Processo / execução
         self.executando_trajetoria = False
         self.saida_digital_ativa = False
+        self._last_wait_reason = ""
+        self._last_do_read_value = None
         self._exec_lock = threading.Lock()
         self._state_lock = threading.RLock()
 
@@ -160,10 +164,73 @@ class RobotAdapter:
     # ----------------------------------------------------------------------
     # I/O
     # ----------------------------------------------------------------------
-    def set_saida_digital(self, ativo: bool):
+    def ler_saida_digital(self):
+        """Lê a saída digital usada pela ferramenta/processo.
+
+        Retorna True/False quando a leitura é possível; retorna None quando a binding
+        da SDK não responder ou quando a leitura falhar. O índice/tipo foram mantidos
+        iguais ao código validado: set_digital_output(0, 1, ...).
+        """
+        if self.modo_simulacao:
+            return bool(self.saida_digital_ativa)
+
+        if not self.robot:
+            return None
+
+        try:
+            if not hasattr(self.robot, "get_digital_output"):
+                return None
+            ret = self.robot.get_digital_output(0, 1)
+            if isinstance(ret, (list, tuple)) and len(ret) >= 2 and ret[0] == 0:
+                val = bool(ret[1])
+                self._last_do_read_value = val
+                return val
+            return None
+        except Exception as e:
+            print(f"[DO] Falha ao ler saída digital: {e}")
+            return None
+
+    def aguardar_saida_digital(self, esperado: bool, timeout_s=2.0, ciclos_estaveis=3):
+        """Aguarda confirmação real da DO via get_digital_output.
+
+        Se a SDK não permitir leitura de DO, usa um pequeno dwell e considera o comando
+        aceito para não quebrar versões da binding que não exponham get_digital_output.
+        """
+        esperado = bool(esperado)
+        t0 = time.time()
+        stable = 0
+        leitura_indisponivel = False
+
+        while time.time() - t0 < timeout_s:
+            atual = self.ler_saida_digital()
+
+            if atual is None:
+                leitura_indisponivel = True
+                break
+
+            if atual == esperado:
+                stable += 1
+                if stable >= ciclos_estaveis:
+                    return True
+            else:
+                stable = 0
+
+            time.sleep(0.03)
+
+        if leitura_indisponivel:
+            # Fallback pragmático: algumas versões do jkrc não expõem leitura de DO.
+            # Mantemos a sequência, mas com dwell para reduzir corrida de I/O.
+            time.sleep(0.12)
+            return True
+
+        return False
+
+    def set_saida_digital(self, ativo: bool, confirmar=True, timeout_s=2.0):
         """Liga/desliga a saída digital da ferramenta de processo.
 
         Mantive a assinatura usada no código original: set_digital_output(0, 1, bool).
+        Quando confirmar=True, a função só retorna True depois da leitura da DO confirmar
+        o estado esperado, ou depois do fallback controlado quando a leitura não existe.
         """
         ativo = bool(ativo)
         if self.modo_simulacao:
@@ -176,12 +243,63 @@ class RobotAdapter:
             ret = self.robot.set_digital_output(0, 1, ativo)
             if ret is not None and not self._ret_ok(ret):
                 print(f"[AVISO] set_digital_output retornou: {ret}")
+                return False
+
+            if confirmar:
+                ok = self.aguardar_saida_digital(ativo, timeout_s=timeout_s, ciclos_estaveis=3)
+                if not ok:
+                    print(f"[ERRO DO] DO não confirmou estado esperado: {ativo}")
+                    return False
+
             self.saida_digital_ativa = ativo
             self.diagnosticos["saida_digital_ativa"] = ativo
             return True
         except Exception as e:
             print(f"[ERRO DO] Falha ao setar saída digital: {e}")
             return False
+
+    def parar_movimento_processo(self):
+        """Interrompe movimento externo enviado pela SDK, sem usar controle de programa.
+
+        Importante: aqui NÃO usamos stop_program/program_abort/pause_program porque
+        estes comandos se referem ao runtime de programas do pendant/JAKA APP. Como a
+        trajetória desta IHM é enviada externamente via SDK/Ethernet, a parada correta
+        para esta camada é motion_abort(). Mantemos stop_move apenas como fallback
+        defensivo se a binding Python da versão instalada expuser esse método.
+        """
+        if self.modo_simulacao or not self.robot:
+            return True
+
+        # 1) Caminho documentado no SDK Python V2.1.7: motion_abort().
+        fn = getattr(self.robot, "motion_abort", None)
+        if callable(fn):
+            try:
+                ret = fn()
+                print(f"[STOP] motion_abort() chamado. Retorno: {ret}")
+                return True
+            except Exception as e:
+                print(f"[STOP] Falha em motion_abort(): {e}")
+
+        # 2) Fallback TCP/algumas bindings: stop_move, se existir.
+        fn = getattr(self.robot, "stop_move", None)
+        if callable(fn):
+            try:
+                ret = fn()
+                print(f"[STOP] stop_move() chamado como fallback. Retorno: {ret}")
+                return True
+            except Exception as e:
+                print(f"[STOP] Falha em stop_move(): {e}")
+
+        # 3) Último recurso: parar jog em todos os eixos, não é ideal para MoveL/MoveC.
+        try:
+            self.parar_grupo([-1])
+            return True
+        except Exception:
+            try:
+                self.parar_grupo([0, 1, 2, 3, 4, 5])
+                return True
+            except Exception:
+                return False
 
     # ----------------------------------------------------------------------
     # Jog/manual
@@ -234,27 +352,121 @@ class RobotAdapter:
             (float(a[2]) - float(b[2])) ** 2
         )
 
-    def aguardar_chegada_por_tcp(self, alvo, tol_mm=2.0, timeout_s=120.0, ciclos_estaveis=5):
-        """Aguarda chegada usando self.posicao_atual_tcp, que é alimentada pelo loop de telemetria.
+    def _is_in_pos(self):
+        """Consulta rápida de estado in-position via SDK.
 
-        Evita chamar is_in_pos()/get_tcp_position() dentro da execução principal no trecho em que
-        queremos preservar a leitura contínua de TCP para o HTML.
+        Retorna True/False quando a SDK responde; retorna None se a chamada não estiver
+        disponível ou falhar. Não usa isso como única fonte de verdade; a barreira física
+        combina in_pos + distância TCP + estabilidade.
+        """
+        if self.modo_simulacao:
+            return True
+        if not self.robot or not hasattr(self.robot, "is_in_pos"):
+            return None
+        try:
+            ret = self.robot.is_in_pos()
+            if isinstance(ret, (list, tuple)) and len(ret) >= 2 and ret[0] == 0:
+                return bool(ret[1])
+            return None
+        except Exception as e:
+            print(f"[INPOS] Falha ao consultar is_in_pos(): {e}")
+            return None
+
+    def aguardar_chegada_por_tcp(
+        self,
+        alvo,
+        tol_mm=2.0,
+        timeout_s=120.0,
+        ciclos_estaveis=5,
+        movimento_tol_mm=0.35,
+        expected_do=None,
+        abort_on_do_mismatch=False,
+        do_check_period_s=0.10,
+        do_mismatch_cycles=2,
+        exigir_inpos=False,
+    ):
+        """Aguarda chegada usando a telemetria TCP já publicada no adapter.
+
+        A regra é propositalmente conservadora:
+        - TCP perto do alvo;
+        - TCP estável por N ciclos;
+        - opcionalmente in_pos=True;
+        - opcionalmente DO no estado esperado durante todo o período.
+
+        Se a DO cair durante a trajetória principal, aborta movimento com motion_abort().
         """
         t0 = time.time()
         stable = 0
+        mismatch = 0
+        last_do_check = 0.0
+        last_atual = None
         alvo = list(alvo)
+        self._last_wait_reason = ""
 
         while time.time() - t0 < timeout_s:
             atual = self._copy_tcp()
-            if self._dist_xyz(atual, alvo) <= tol_mm:
+            dist = self._dist_xyz(atual, alvo)
+            delta = self._dist_xyz(atual, last_atual) if last_atual is not None else 999999.0
+            last_atual = atual
+
+            if expected_do is not None and (time.time() - last_do_check) >= do_check_period_s:
+                last_do_check = time.time()
+                do_val = self.ler_saida_digital()
+                if do_val is not None and do_val != bool(expected_do):
+                    mismatch += 1
+                    if abort_on_do_mismatch and mismatch >= do_mismatch_cycles:
+                        self._last_wait_reason = (
+                            f"Saída digital saiu do estado esperado ({expected_do}) durante o movimento."
+                        )
+                        self.parar_movimento_processo()
+                        return False
+                else:
+                    mismatch = 0
+
+            inpos_ok = True
+            if exigir_inpos:
+                inpos = self._is_in_pos()
+                # Se a SDK não responder, não travamos a aplicação; seguimos pela barreira TCP.
+                inpos_ok = True if inpos is None else bool(inpos)
+
+            if dist <= tol_mm and delta <= movimento_tol_mm and inpos_ok:
                 stable += 1
                 if stable >= ciclos_estaveis:
                     return True
             else:
                 stable = 0
+
             time.sleep(0.03)
 
+        self._last_wait_reason = f"Timeout aguardando alvo XYZ {alvo[:3]}."
         return False
+
+    def _barreira_fisica_no_ponto(self, pose, nome="ponto", tol_mm=1.0, timeout_s=60.0, ciclos_estaveis=10):
+        """Barreira conservadora antes de qualquer transição de processo.
+
+        Esta função é usada antes de ligar/desligar processo. Ela evita confiar apenas
+        no retorno de linear_move(..., is_block=True), que no robô real mostrou
+        variabilidade. A liberação só ocorre após TCP estabilizado perto do alvo e,
+        quando disponível, is_in_pos=True.
+        """
+        if self.modo_simulacao:
+            return True
+
+        ok = self.aguardar_chegada_por_tcp(
+            pose,
+            tol_mm=tol_mm,
+            timeout_s=timeout_s,
+            ciclos_estaveis=ciclos_estaveis,
+            movimento_tol_mm=0.25,
+            exigir_inpos=True,
+        )
+        if not ok:
+            print(f"[BARREIRA] Timeout em {nome}: alvo={pose[:3]}, tcp={self._copy_tcp()[:3]}")
+            return False
+
+        # Dwell pequeno, mas importante: separa o último frame de movimento do comando de DO.
+        time.sleep(0.12)
+        return True
 
     def _linear_move_bloqueante(self, pose, vel):
         if self.modo_simulacao:
@@ -265,7 +477,18 @@ class RobotAdapter:
         ret = self.robot.linear_move(pose, 0, True, vel)
         if ret is not None and not self._ret_ok(ret):
             print(f"[AVISO] linear_move bloqueante retornou: {ret}")
+            return False
         return True
+
+    def _linear_move_bloqueante_confirmado(self, pose, vel, tol_mm=1.0, timeout_s=60.0, ciclos_estaveis=10, nome="MoveL"):
+        self._linear_move_bloqueante(pose, vel)
+        return self._barreira_fisica_no_ponto(
+            pose,
+            nome=nome,
+            tol_mm=tol_mm,
+            timeout_s=timeout_s,
+            ciclos_estaveis=ciclos_estaveis,
+        )
 
     def _linear_move_nao_bloqueante(self, pose, vel):
         if self.modo_simulacao:
@@ -276,11 +499,11 @@ class RobotAdapter:
         ret = self.robot.linear_move(pose, 0, False, vel)
         if ret is not None and not self._ret_ok(ret):
             print(f"[AVISO] linear_move não bloqueante retornou: {ret}")
+            return False
         return True
 
     def _circular_move_nao_bloqueante(self, end_pose, mid_pose, vel, acc=800, tol=0):
         if self.modo_simulacao:
-            # Simulação simples: passa pelo ponto médio e pelo final.
             self._set_tcp(mid_pose)
             time.sleep(0.15)
             self._set_tcp(end_pose)
@@ -290,17 +513,133 @@ class RobotAdapter:
         ret = self.robot.circular_move(end_pose, mid_pose, 0, False, vel, acc, tol)
         if ret is not None and not self._ret_ok(ret):
             print(f"[AVISO] circular_move não bloqueante retornou: {ret}")
+            return False
         return True
 
-    def executar_trajetoria(self):
-        """Executa trajetória com três fases.
+    def _fase_entrada_processo(self, p1_real, h_clearance):
+        """Entrada comum para trajetória linear e circular.
 
-        Fase 1 — entrada bloqueante:
-            sobe/posiciona acima de P1, desce até P1, liga DO.
-        Fase 2 — trajetória principal não bloqueante:
-            MoveL/MoveC sem I/O no meio para preservar telemetria TCP no HTML.
-        Fase 3 — finalização:
-            aguarda chegada ao último ponto pela telemetria, desliga DO, sobe no último ponto.
+        Ordem física obrigatória:
+        1. DO off confirmada;
+        2. MoveL bloqueante até ponto alto de entrada;
+        3. MoveL bloqueante de descida até P1;
+        4. barreira física no P1;
+        5. DO on confirmada;
+        6. só então a trajetória principal pode começar.
+        """
+        p1_real = list(p1_real)
+        p1_aprox = [a + b for a, b in zip(p1_real, h_clearance)]
+
+        print(f"[SEQ] Entrada: garantindo DO OFF.")
+        if not self.set_saida_digital(False, confirmar=True, timeout_s=2.0):
+            return False, "Falha ao garantir saída digital desligada antes da aproximação."
+
+        print(f"[SEQ] Entrada: indo para ponto alto sobre P1 {p1_aprox[:3]}.")
+        if not self._linear_move_bloqueante_confirmado(
+            p1_aprox,
+            self.vel_aproximacao,
+            tol_mm=1.5,
+            timeout_s=60.0,
+            ciclos_estaveis=8,
+            nome="ponto alto de entrada",
+        ):
+            return False, "Timeout na aproximação ao ponto de entrada. Saída digital mantida desligada."
+
+        print(f"[SEQ] Entrada: descendo até P1 {p1_real[:3]}.")
+        if not self._linear_move_bloqueante_confirmado(
+            p1_real,
+            self.vel_aproximacao,
+            tol_mm=1.0,
+            timeout_s=60.0,
+            ciclos_estaveis=12,
+            nome="P1 antes de DO ON",
+        ):
+            return False, "Timeout na descida até o primeiro ponto. Saída digital mantida desligada."
+
+        print("[SEQ] Entrada: P1 confirmado; ligando DO.")
+        if not self.set_saida_digital(True, confirmar=True, timeout_s=2.0):
+            return False, "Falha ao confirmar saída digital ligada no primeiro ponto. Trajetória principal não iniciada."
+
+        # Barreira solicitada: a trajetória principal só começa depois de DO ativa.
+        if not self.aguardar_saida_digital(True, timeout_s=2.0, ciclos_estaveis=3):
+            return False, "Saída digital não permaneceu ligada antes da trajetória principal."
+
+        print("[SEQ] Entrada concluída: DO ON confirmada. Iniciando trajetória principal.")
+        return True, "Entrada concluída."
+
+    def _fase_trajetoria_principal(self, pontos):
+        """Trajetória comum para MoveL e MoveC, sem I/O no meio."""
+        i = 1  # P1 já foi consumido pela fase de entrada
+        while i < len(pontos):
+            tipo, pose = pontos[i]
+
+            # Watchdog leve antes de cada novo comando: não inicia próximo segmento se DO caiu.
+            do_val = self.ler_saida_digital()
+            if do_val is not None and not do_val:
+                self.parar_movimento_processo()
+                return False, "Saída digital desligada antes/durante a trajetória principal. Movimento abortado."
+
+            if tipo == "C" and i + 1 < len(pontos) and pontos[i + 1][0] == "C":
+                mid_pose = list(pontos[i][1])
+                end_pose = list(pontos[i + 1][1])
+                print(f"[SEQ] Trajetória: MoveC mid={mid_pose[:3]} end={end_pose[:3]}.")
+                if not self._circular_move_nao_bloqueante(end_pose=end_pose, mid_pose=mid_pose, vel=self.vel_reproducao):
+                    self.parar_movimento_processo()
+                    return False, "Falha ao enviar MoveC. Movimento abortado."
+                i += 2
+            else:
+                print(f"[SEQ] Trajetória: MoveL {list(pose)[:3]}.")
+                if not self._linear_move_nao_bloqueante(list(pose), self.vel_reproducao):
+                    self.parar_movimento_processo()
+                    return False, "Falha ao enviar MoveL. Movimento abortado."
+                i += 1
+
+            # Pequeno yield para não empurrar todos os comandos no mesmo instante e dar tempo
+            # ao controlador/telemetria de atualizar estado de processo.
+            time.sleep(0.02)
+
+        return True, "Trajetória principal enviada."
+
+    def _fase_saida_processo(self, ultimo_real, h_clearance):
+        """Saída comum para trajetória linear e circular.
+
+        Ordem física obrigatória:
+        1. DO off confirmada;
+        2. só então MoveL bloqueante para ponto alto sobre o último ponto.
+        """
+        ultimo_real = list(ultimo_real)
+        p_saida_aprox = [a + b for a, b in zip(ultimo_real, h_clearance)]
+
+        print("[SEQ] Saída: desligando DO.")
+        if not self.set_saida_digital(False, confirmar=True, timeout_s=2.0):
+            self.parar_movimento_processo()
+            return False, "Falha ao confirmar saída digital desligada no fim. Movimento de saída bloqueado."
+
+        # Barreira solicitada: só sobe depois de DO realmente off.
+        if not self.aguardar_saida_digital(False, timeout_s=2.0, ciclos_estaveis=3):
+            self.parar_movimento_processo()
+            return False, "Saída digital não permaneceu desligada antes do movimento de saída."
+
+        print(f"[SEQ] Saída: subindo para ponto alto sobre último ponto {p_saida_aprox[:3]}.")
+        if not self._linear_move_bloqueante_confirmado(
+            p_saida_aprox,
+            self.vel_aproximacao,
+            tol_mm=2.0,
+            timeout_s=60.0,
+            ciclos_estaveis=8,
+            nome="ponto alto de saída",
+        ):
+            return False, "Timeout no movimento de saída após desligar DO."
+
+        print("[SEQ] Saída concluída.")
+        return True, "Saída concluída."
+
+    def executar_trajetoria(self):
+        """Executa trajetória com fases comuns de entrada/miolo/saída.
+
+        A mesma entrada e a mesma saída são usadas para trajetórias lineares e circulares.
+        Isso remove a falsa diferença entre os dois casos: ambos precisam da mesma
+        transação de processo antes e depois da trajetória principal.
         """
         with self._exec_lock:
             if self.executando_trajetoria:
@@ -316,68 +655,45 @@ class RobotAdapter:
 
             h_clearance = [0, 0, 50, 0, 0, 0]
             p1_real = list(pontos[0][1])
-            p1_aprox = [a + b for a, b in zip(p1_real, h_clearance)]
             ultimo_real = list(pontos[-1][1])
-            p_saida_aprox = [a + b for a, b in zip(ultimo_real, h_clearance)]
 
             if self.modo_simulacao:
-                print("[SIMULAÇÃO] Executando trajetória híbrida na bancada virtual...")
+                print("[SIMULAÇÃO] Executando trajetória híbrida V10.")
 
-            # ------------------------------------------------------------------
-            # FASE 1 — Entrada / aproximação: BLOQUEANTE
-            # ------------------------------------------------------------------
-            self.set_saida_digital(False)
-            self._linear_move_bloqueante(p1_aprox, self.vel_aproximacao)
-            self._linear_move_bloqueante(p1_real, self.vel_aproximacao)
-            self.set_saida_digital(True)
+            ok, msg = self._fase_entrada_processo(p1_real, h_clearance)
+            if not ok:
+                return msg
 
-            # ------------------------------------------------------------------
-            # FASE 2 — Trajetória principal: NÃO BLOQUEANTE, sem I/O no meio
-            # P1 já foi consumido pela entrada; começa no ponto 1 da lista.
-            # Para MoveC: posição atual é o início; C atual é mid; C seguinte é end.
-            # ------------------------------------------------------------------
-            i = 1
-            while i < len(pontos):
-                tipo, pose = pontos[i]
+            ok, msg = self._fase_trajetoria_principal(pontos)
+            if not ok:
+                self.set_saida_digital(False, confirmar=False)
+                return msg
 
-                if (
-                    tipo == "C" and
-                    i + 1 < len(pontos) and
-                    pontos[i + 1][0] == "C"
-                ):
-                    mid_pose = list(pontos[i][1])
-                    end_pose = list(pontos[i + 1][1])
-                    self._circular_move_nao_bloqueante(
-                        end_pose=end_pose,
-                        mid_pose=mid_pose,
-                        vel=self.vel_reproducao,
-                        acc=800,
-                        tol=0,
-                    )
-                    i += 2
-                else:
-                    self._linear_move_nao_bloqueante(list(pose), self.vel_reproducao)
-                    i += 1
-
-            # Aguarda a chegada real sem disputar diretamente chamadas bloqueantes da SDK.
+            # Aguarda fim físico da trajetória principal sem usar movimento/programa bloqueante.
+            # Durante a espera, a DO é monitorada; se cair, motion_abort() é chamado.
+            print(f"[SEQ] Aguardando chegada ao último ponto {ultimo_real[:3]} com DO ON supervisionada.")
             chegou = self.aguardar_chegada_por_tcp(
                 ultimo_real,
                 tol_mm=2.0,
                 timeout_s=120.0,
-                ciclos_estaveis=5,
+                ciclos_estaveis=8,
+                movimento_tol_mm=0.30,
+                expected_do=True,
+                abort_on_do_mismatch=True,
+                do_check_period_s=0.10,
+                do_mismatch_cycles=2,
+                exigir_inpos=True,
             )
 
             if not chegou:
-                self.set_saida_digital(False)
-                return "Timeout aguardando chegada ao último ponto. Saída digital desligada por segurança."
+                self.set_saida_digital(False, confirmar=False)
+                detalhe = self._last_wait_reason or "Timeout aguardando chegada ao último ponto."
+                return f"{detalhe} Saída digital desligada por segurança."
 
-            # ------------------------------------------------------------------
-            # FASE 3 — Fim / saída: DO off + subida bloqueante no ÚLTIMO ponto
-            # ------------------------------------------------------------------
-            self.set_saida_digital(False)
-            self._linear_move_bloqueante(p_saida_aprox, self.vel_aproximacao)
+            ok, msg = self._fase_saida_processo(ultimo_real, h_clearance)
+            if not ok:
+                return msg
 
-            # Mantém os pontos na tela após execução.
             if self.on_point_saved:
                 self.on_point_saved(pontos)
 
@@ -385,7 +701,8 @@ class RobotAdapter:
 
         except Exception as e:
             try:
-                self.set_saida_digital(False)
+                self.parar_movimento_processo()
+                self.set_saida_digital(False, confirmar=False)
             except Exception:
                 pass
             return f"Erro na execução da trajetória: {e}"

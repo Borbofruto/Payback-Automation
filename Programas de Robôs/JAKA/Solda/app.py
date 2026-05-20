@@ -1,5 +1,5 @@
 # app.py
-# Backend Flask/Socket.IO — IHM Solda Payback
+# Backend Flask/Socket.IO — IHM Solda Payback — V10
 # Mantém o HTML atual e conecta com robot_adapter.py.
 
 # CRÍTICO: eventlet precisa ser importado e aplicar monkey_patch antes dos demais imports de rede/thread.
@@ -64,14 +64,14 @@ def conectar_robo():
 
 def gerenciar_execucao_segura():
     """Executa a trajetória fora do handler HTTP e preserva a lista de pontos na HMI."""
-    backup_pontos = copy.deepcopy(adapter.lista_pontos)
+    backup_pontos = adapter._get_pontos_snapshot()
 
     try:
         resultado = tpool.execute(adapter.executar_trajetoria)
     except Exception as e:
         resultado = f'Erro crítico ao iniciar/executar trajetória: {e}'
 
-    adapter.lista_pontos = backup_pontos
+    adapter._set_pontos(backup_pontos)
     socketio.emit('atualizar_pontos', {'pontos': backup_pontos})
     socketio.emit('execucao_status', {'message': resultado})
 
@@ -88,7 +88,7 @@ def executar_trajetoria():
 
 @app.route('/api/trajetoria/limpar', methods=['POST'])
 def limpar_trajetoria():
-    adapter.lista_pontos = []
+    adapter._set_pontos([])
     socketio.emit('atualizar_pontos', {'pontos': []})
     return jsonify({'status': 'success', 'message': 'Trajetória limpa.'})
 
@@ -117,10 +117,10 @@ adapter.on_point_saved = lambda pts: socketio.emit('atualizar_pontos', {'pontos'
 @socketio.on('connect')
 def on_connect():
     # Empurra estado inicial para a tela assim que o cliente conecta.
-    socketio.emit('atualizar_pontos', {'pontos': copy.deepcopy(adapter.lista_pontos)})
+    socketio.emit('atualizar_pontos', {'pontos': adapter._get_pontos_snapshot()})
     socketio.emit('atualizar_estado', {
-        'tcp': list(adapter.posicao_atual_tcp),
-        'pontos': copy.deepcopy(adapter.lista_pontos),
+        'tcp': adapter._copy_tcp(),
+        'pontos': adapter._get_pontos_snapshot(),
         'modo_sim': adapter.modo_simulacao,
         'angulo_operador': adapter.angulo_operador,
         'diagnosticos': copy.deepcopy(adapter.diagnosticos),
