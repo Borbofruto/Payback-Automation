@@ -117,9 +117,9 @@ canvas{width:100%;height:100%;display:block;background:#fff;position:relative;z-
 .ponto-empty{display:flex;align-items:center;justify-content:center;height:100%;color:var(--t3);font-size:calc(11px * var(--fs));font-weight:700;text-align:center;padding:14px;}
 .ponto-main{min-width:0;color:var(--t2);line-height:1.35;}
 .ponto-main strong{color:var(--t1);}
-.pose-line{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.pose-line{display:block;white-space:normal;overflow:visible;text-overflow:clip;}
 .pose-line.pos{font-weight:800;color:var(--t1);}
-.pose-line.rot{font-size:calc(10px * var(--fs));color:var(--mut);}
+.pose-line.rot{font-size:calc(10px * var(--fs));color:var(--mut);font-family:Consolas, monospace;}
 .ponto-tipo{padding:3px 7px;border-radius:var(--rp);font-weight:900;font-size:calc(10px * var(--fs));color:white;flex-shrink:0;}
 .ponto-tipo.L{background:var(--er);}
 .ponto-tipo.C{background:var(--wn);}
@@ -243,7 +243,7 @@ canvas{width:100%;height:100%;display:block;background:#fff;position:relative;z-
       <a onclick="toast('Parâmetros avançados entram depois da validação visual')"><i class="fa-solid fa-sliders"></i> Parâmetros</a>
       <a onclick="toast('Log operacional será conectado na etapa de backend')"><i class="fa-solid fa-scroll"></i> Log</a>
       <div class="nav-spacer"></div>
-      <div class="nav-foot">Módulo de solda<br>Versão V16 · pose absoluta<br>Backend Python/Socket.IO</div>
+      <div class="nav-foot">Módulo de solda<br>Versão V17 · pose absoluta<br>Backend Python/Socket.IO</div>
     </nav>
 
     <main class="art">
@@ -251,7 +251,7 @@ canvas{width:100%;height:100%;display:block;background:#fff;position:relative;z-
         <div class="visual-main">
           <div class="visual-head">
             <h4><i class="fa-solid fa-crosshairs"></i> Trajetória programada</h4>
-            <span class="meta">canvas XY · poses TCP absolutas · mira TCP</span>
+            <span class="meta">canvas XY · poses TCP absolutas [X,Y,Z,RX,RY,RZ] · mira TCP</span>
             <div class="right"><button class="btn btn-g btn-sm" onclick="desenharVisualizacao()"><i class="fa-solid fa-rotate"></i> Redesenhar</button></div>
           </div>
           <div class="canvas-wrapper"><canvas id="jakaCanvas"></canvas></div>
@@ -288,6 +288,7 @@ canvas{width:100%;height:100%;display:block;background:#fff;position:relative;z-
             <div class="listbox-pontos" id="lista-pontos-container"><div class="ponto-empty">Nenhum ponto salvo.<br>Use o joystick ou adicione manualmente.</div></div>
             <div class="btn-row">
               <button class="btn btn-p" onclick="executarTrajetoria()"><i class="fas fa-play"></i> Rodar</button>
+              <button class="btn btn-g" onclick="removerUltimoPonto()"><i class="fas fa-delete-left"></i> Remover último</button>
               <button class="btn btn-d" onclick="limparTrajetoria()"><i class="fas fa-trash-can"></i> Limpar</button>
             </div>
             <div class="btn-row">
@@ -451,6 +452,13 @@ if (socket) {
       atualizarDiagnosticosReais(dados.diagnosticos);
     }
 
+    if (dados.trajetoria_em_erro) {
+      const errs = Array.isArray(dados.trajetoria_erros) && dados.trajetoria_erros.length
+        ? dados.trajetoria_erros
+        : ['Erro de trajetória ativo. Reconheça o erro para liberar o controle.'];
+      mostrarErroTrajetoria(errs);
+    }
+
     if (telaAtual === 'trajetoria') desenharVisualizacao();
   });
 
@@ -461,6 +469,13 @@ if (socket) {
     validarTrajetoriaAtual();
     if (dados.diagnosticos) {
       atualizarDiagnosticosReais(dados.diagnosticos);
+    }
+
+    if (dados.trajetoria_em_erro) {
+      const errs = Array.isArray(dados.trajetoria_erros) && dados.trajetoria_erros.length
+        ? dados.trajetoria_erros
+        : ['Erro de trajetória ativo. Reconheça o erro para liberar o controle.'];
+      mostrarErroTrajetoria(errs);
     }
 
     if (telaAtual === 'trajetoria') desenharVisualizacao();
@@ -538,8 +553,8 @@ function renderizarListaPontos(pontos) {
     const msg = tipo === 'L' ? 'Linear' : 'Circular';
     item.innerHTML = `
       <span class="ponto-main">
-        <span class="pose-line pos"><strong>#${idx+1}</strong> — X ${fmtPoseValue(pose[0],1)} · Y ${fmtPoseValue(pose[1],1)} · Z ${fmtPoseValue(pose[2],1)}</span>
-        <span class="pose-line rot">RX ${fmtPoseValue(pose[3],4)} · RY ${fmtPoseValue(pose[4],4)} · RZ ${fmtPoseValue(pose[5],4)} rad</span>
+        <span class="pose-line pos"><strong>#${idx+1}</strong> ABS — X ${fmtPoseValue(pose[0],1)} · Y ${fmtPoseValue(pose[1],1)} · Z ${fmtPoseValue(pose[2],1)}</span>
+        <span class="pose-line rot">TCP rot: RX ${fmtPoseValue(pose[3],4)} · RY ${fmtPoseValue(pose[4],4)} · RZ ${fmtPoseValue(pose[5],4)} rad</span>
       </span>
       <span class="ponto-tipo ${tipo}">${msg}</span>`;
     container.appendChild(item);
@@ -797,6 +812,27 @@ function executarTrajetoria() {
     .catch(() => {
       atualizarStatusTrajetoria('Backend não conectado. Nenhum movimento foi enviado ao robô.', 'err');
       toast('Backend não conectado.');
+    });
+}
+
+function removerUltimoPonto() {
+  fetch('/api/trajetoria/remover_ultimo', { method: 'POST' })
+    .then(async r => ({ ok: r.ok, data: await r.json().catch(() => ({})) }))
+    .then(({data}) => {
+      const pts = Array.isArray(data.pontos) ? data.pontos : null;
+      if (pts) {
+        estadoLocal.pontos = pts;
+        renderizarListaPontos(pts);
+        desenharVisualizacao();
+      }
+      atualizarStatusTrajetoria(data.message || 'Último ponto removido.', 'warn');
+      toast(data.message || 'Último ponto removido.');
+    })
+    .catch(() => {
+      if (estadoLocal.pontos.length) estadoLocal.pontos.pop();
+      renderizarListaPontos(estadoLocal.pontos);
+      desenharVisualizacao();
+      atualizarStatusTrajetoria('Backend não conectado. Removido apenas na interface visual.', 'warn');
     });
 }
 

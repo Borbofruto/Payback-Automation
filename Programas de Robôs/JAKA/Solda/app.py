@@ -1,5 +1,5 @@
 # app.py
-# Backend Flask/Socket.IO — IHM Solda Payback — V15 absoluto + modal de erro.
+# Backend Flask/Socket.IO — IHM Solda Payback — V17 correções de pontos/jog/modal.
 # HTML fica na raiz do projeto.
 
 import eventlet
@@ -118,10 +118,20 @@ def executar_trajetoria():
 
 @app.route('/api/trajetoria/limpar', methods=['POST'])
 def limpar_trajetoria():
-    adapter._set_pontos([])
+    adapter.limpar_pontos()
     socketio.emit('atualizar_pontos', {'pontos': []})
-    socketio.emit('execucao_status', {'message': 'Trajetória limpa.', 'status': 'info'})
+    socketio.emit('execucao_status', {'message': 'Trajetória limpa e erro de trajetória liberado.', 'status': 'info'})
     return jsonify({'status': 'success', 'message': 'Trajetória limpa.'})
+
+
+@app.route('/api/trajetoria/remover_ultimo', methods=['POST'])
+def remover_ultimo_ponto():
+    removed = adapter.remover_ultimo_ponto()
+    pts = adapter._get_pontos_snapshot()
+    socketio.emit('atualizar_pontos', {'pontos': pts})
+    msg = 'Último ponto removido.' if removed else 'Não há pontos para remover.'
+    socketio.emit('execucao_status', {'message': msg, 'status': 'info' if removed else 'warn'})
+    return jsonify({'status': 'success' if removed else 'empty', 'message': msg, 'pontos': pts})
 
 
 @app.route('/api/ponto/adicionar', methods=['POST'])
@@ -139,6 +149,7 @@ def adicionar_ponto_manual():
 @app.route('/api/trajetoria/erro/ack', methods=['POST'])
 def ack_erro_trajetoria():
     adapter.limpar_erro_trajetoria()
+    socketio.emit('atualizar_estado', adapter.snapshot_state())
     socketio.emit('execucao_status', {'message': 'Erro de trajetória reconhecido. Controle liberado.', 'status': 'info'})
     return jsonify({'status': 'success', 'message': 'Erro reconhecido. Controle liberado.'})
 
@@ -160,6 +171,7 @@ def disparar_update_via_websocket(dados):
 adapter.on_state_update = disparar_update_via_websocket
 adapter.on_point_saved = lambda pts: socketio.emit('atualizar_pontos', {'pontos': pts})
 adapter.on_execution_status = lambda dados: socketio.emit('execucao_status', dados)
+adapter.on_trajectory_error = lambda dados: socketio.emit('trajectory_error', dados)
 
 
 @socketio.on('connect')

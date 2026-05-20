@@ -1,5 +1,5 @@
 # robot_adapter.py
-# Adapter de alto nível da IHM de Solda Payback.
+# Adapter de alto nível da IHM de Solda Payback — V17.
 # Cola driver JAKA, planner de trajetória, telemetria e joystick.
 
 import copy
@@ -31,6 +31,10 @@ class RobotAdapter:
         self.DEADZONE = 0.2
         self.vel_reproducao = 15.0
         self.vel_aproximacao = 150.0
+        # Pequena folga entre comandos não bloqueantes para evitar perda/reordenação
+        # observada em trajetórias mistas no controlador. Não é delay de execução; é
+        # intervalo de envio de comando para a fila do controlador.
+        self.command_gap_s = 0.04
 
         # Estado
         self._state_lock = threading.RLock()
@@ -61,6 +65,7 @@ class RobotAdapter:
         self.on_state_update = None
         self.on_point_saved = None
         self.on_execution_status = None
+        self.on_trajectory_error = None
 
         if self.modo_simulacao:
             print(f"[AVISO] SDK JAKA não carregado ({self.driver.sdk_error()}). Modo simulação ativo.")
@@ -87,6 +92,23 @@ class RobotAdapter:
         with self._state_lock:
             self.lista_pontos = copy.deepcopy(pontos)
         self._emit_pontos()
+    def limpar_pontos(self) -> None:
+        # Limpar trajetória também libera erro de trajetória pendente; caso contrário
+        # o joystick ficava bloqueado mesmo sem pontos para corrigir.
+        with self._state_lock:
+            self.lista_pontos = []
+        self.limpar_erro_trajetoria()
+        self._emit_pontos()
+
+    def remover_ultimo_ponto(self) -> bool:
+        with self._state_lock:
+            if not self.lista_pontos:
+                return False
+            self.lista_pontos.pop()
+        # Remover ponto é uma ação de correção; libera erro pendente para permitir nova marcação.
+        self.limpar_erro_trajetoria()
+        self._emit_pontos()
+        return True
 
     def _emit_pontos(self) -> None:
         if self.on_point_saved:
@@ -106,8 +128,17 @@ class RobotAdapter:
             self.trajetoria_erros = errors
             self.diagnosticos["trajetoria_em_erro"] = True
             self.diagnosticos["trajetoria_erros"] = list(errors)
+        # Para todos os eixos uma única vez ao entrar em erro.
+        # Não ficar chamando jog_stop a cada ciclo; isso travava o controle em algumas versões.
         self.parar_grupo([0, 1, 2, 3, 4, 5])
-        self._erro_joystick_stop_emitido = False
+        self.grupo_ativo = None
+        self._erro_joystick_stop_emitido = True
+        if self.on_trajectory_error:
+            self.on_trajectory_error({
+                "status": "trajectory_error",
+                "message": errors[0] if errors else "Trajetória inválida.",
+                "errors": list(errors),
+            })
 
     def limpar_erro_trajetoria(self) -> None:
         with self._state_lock:
@@ -358,7 +389,7 @@ class RobotAdapter:
                 if not self._circular_move_nonblocking(seg.mid.pose, seg.end.pose, self.vel_reproducao):
                     self.parar_movimento_processo()
                     return False, f"Falha enviando MoveC pontos #{seg.mid.index + 1}/#{seg.end.index + 1}."
-            time.sleep(0.005)
+            time.sleep(self.command_gap_s)
         return True, "Trajetória principal enviada."
 
     def _fase_saida(self, last_pose, clearance):
@@ -464,9 +495,9 @@ class RobotAdapter:
         # bloqueado até o operador reconhecer o modal na IHM. Isso evita que o robô
         # continue sendo movimentado em um estado operacional ambíguo.
         if self.trajetoria_em_erro:
-            self.parar_grupo([0, 1, 2, 3, 4, 5])
+            # Movimento manual bloqueado até ACK do operador.
+            # IMPORTANTE: não repetir jog_stop em loop; a parada já foi emitida em definir_erro_trajetoria().
             self.grupo_ativo = None
-            # Atualiza estados de borda para não disparar comandos atrasados no OK.
             for b in (4, 5, 6, 7, 8, 15):
                 try:
                     self.last_btns[b] = joy.get_button(b)
@@ -496,6 +527,15 @@ class RobotAdapter:
         pressing_z = (axis_4 > -0.9 or axis_5 > -0.9)
         pressing_rz = (btn_9 or btn_10)
 
+        grupos_pressionados = sum(bool(x) for x in (pressing_linear, pressing_rot, pressing_z, pressing_rz))
+
+        # Se o operador combina grupos de comando diferentes, bloqueia o jog naquele ciclo.
+        # Isso corrige o runaway observado ao segurar translação e apertar rotação junto.
+        if grupos_pressionados > 1:
+            self.parar_grupo([0, 1, 2, 3, 4, 5])
+            self.grupo_ativo = None
+            return
+
         if self.grupo_ativo is None:
             if pressing_linear:
                 self.grupo_ativo = "LINEAR"
@@ -516,21 +556,27 @@ class RobotAdapter:
             self.parar_grupo([5]); self.grupo_ativo = None
 
         if self.grupo_ativo == "LINEAR":
+            self.parar_grupo([2, 3, 4, 5])
             vx_raw = float(btn_14 - btn_13) * self.MAX_SPD_LINEAR
             vy_raw = float(btn_11 - btn_12) * self.MAX_SPD_LINEAR
             self.enviar_jog(0, vx_raw * cos_t - vy_raw * sin_t, 0)
             self.enviar_jog(1, vx_raw * sin_t + vy_raw * cos_t, 0)
         elif self.grupo_ativo == "ROTAT_TCP":
+            self.parar_grupo([0, 1, 2, 5])
             vrx_raw = float(btn_0 - btn_3) * self.MAX_SPD_ROTAT
             vry_raw = float(btn_1 - btn_2) * self.MAX_SPD_ROTAT
             self.enviar_jog(3, vrx_raw * cos_t - vry_raw * sin_t, 2)
             self.enviar_jog(4, vrx_raw * sin_t + vry_raw * cos_t, 2)
         elif self.grupo_ativo == "EIXO_Z":
+            self.parar_grupo([0, 1, 3, 4, 5])
             down = (axis_4 + 1.0) / 2.0 if axis_4 > -0.9 else 0.0
             up = (axis_5 + 1.0) / 2.0 if axis_5 > -0.9 else 0.0
             self.enviar_jog(2, (up - down) * self.MAX_SPD_LINEAR, 0)
         elif self.grupo_ativo == "EIXO_RZ":
+            self.parar_grupo([0, 1, 2, 3, 4])
             self.enviar_jog(5, float(btn_9 - btn_10) * self.MAX_SPD_ROTAT, 1)
+        else:
+            self.parar_grupo([0, 1, 2, 3, 4, 5])
 
         # salvar pontos
         b6 = joy.get_button(6)
@@ -548,13 +594,12 @@ class RobotAdapter:
             if self.last_btns[5] == 0:
                 self.b5_press_time = time.time(); self.b5_triggered_long_press = False
             elif self.b5_press_time and not self.b5_triggered_long_press and time.time() - self.b5_press_time >= 2.0:
-                self._set_pontos([]); self.b5_triggered_long_press = True
+                self.limpar_pontos(); self.b5_triggered_long_press = True
         elif b5 == 0 and self.last_btns[5] == 1:
             if not self.b5_triggered_long_press:
                 pts = self._get_pontos_snapshot()
                 if pts:
-                    pts.pop()
-                    self._set_pontos(pts)
+                    self.remover_ultimo_ponto()
             self.b5_press_time = None; self.b5_triggered_long_press = False
         self.last_btns[5] = b5
 
