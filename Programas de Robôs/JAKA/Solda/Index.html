@@ -149,6 +149,15 @@ canvas{width:100%;height:100%;display:block;background:#fff;position:relative;z-
 .trend-badge{padding:4px 8px;border-radius:var(--rp);font-weight:900;font-size:calc(10px * var(--fs));white-space:nowrap;}
 .trend-badge.ok{background:var(--oks);color:var(--ok);}
 .trend-badge.attention{background:var(--wns);color:var(--wn);border:1px solid rgba(224,161,0,.25);}
+
+.status-banner{margin-top:10px;border:1px solid var(--bd);border-radius:var(--rg);padding:9px 11px;font-size:calc(12px * var(--fs));font-weight:800;background:#F8FAFC;color:var(--mut);line-height:1.35;}
+.status-banner.ok{background:#EAF7EF;border-color:#BFE5CC;color:var(--ok);}
+.status-banner.err{background:#FCEDEF;border-color:#F5C2C7;color:var(--err);}
+.status-banner.warn{background:#FFF7E6;border-color:#F4D08A;color:#8A6200;}
+.telemetry-warning{border:1px solid #F4D08A;background:#FFF7E6;color:#8A6200;border-radius:var(--rg);padding:10px 12px;margin-bottom:12px;font-size:calc(12px * var(--fs));font-weight:800;}
+.telemetry-warning.ok{border-color:#BFE5CC;background:#EAF7EF;color:var(--ok);}
+.telemetry-warning.err{border-color:#F5C2C7;background:#FCEDEF;color:var(--err);}
+
 .toast{position:fixed;bottom:76px;left:50%;transform:translateX(-50%);background:var(--nv);color:#fff;padding:10px 18px;border-radius:var(--rp);font-size:calc(12px * var(--fs));font-weight:800;z-index:9999;box-shadow:var(--sh2);opacity:0;pointer-events:none;transition:opacity .2s, transform .2s;}
 .toast.show{opacity:1;transform:translateX(-50%) translateY(-4px);}
 ::-webkit-scrollbar{width:6px;height:6px;}
@@ -245,6 +254,7 @@ canvas{width:100%;height:100%;display:block;background:#fff;position:relative;z-
 
           <div class="card">
             <div class="cttl"><i class="fa-solid fa-list-ol"></i> Trajetória programada</div>
+            <div id="trajectory-status" class="status-banner warn">Aguardando pontos. A execução será validada antes de enviar comandos ao robô.</div>
             <div class="listbox-pontos" id="lista-pontos-container"><div class="ponto-empty">Nenhum ponto salvo.<br>Use o joystick ou adicione manualmente.</div></div>
             <div class="btn-row">
               <button class="btn btn-p" onclick="executarTrajetoria()"><i class="fas fa-play"></i> Rodar</button>
@@ -260,6 +270,7 @@ canvas{width:100%;height:100%;display:block;background:#fff;position:relative;z-
 
       <section id="page-telemetria" class="page">
         <div class="telemetry-main">
+          <div id="telemetry-warning" class="telemetry-warning">Telemetria não validada: aguardando dados reais do controlador JAKA.</div>
           <div class="card">
             <div class="cttl"><i class="fa-solid fa-heart-pulse"></i> Diagnóstico e manutenção</div>
             <div class="kpi-container">
@@ -415,12 +426,45 @@ if (socket) {
     const pontos = dados && Array.isArray(dados.pontos) ? dados.pontos : [];
     estadoLocal.pontos = pontos;
     renderizarListaPontos(pontos);
+    validarTrajetoriaAtual();
     if (dados.diagnosticos) {
       atualizarDiagnosticosReais(dados.diagnosticos);
     }
 
     if (telaAtual === 'trajetoria') desenharVisualizacao();
   });
+
+  socket.on('execucao_status', (dados) => {
+    if (!dados) return;
+    atualizarStatusTrajetoria(dados.message || 'Status de execução atualizado.', dados.status || 'info');
+    toast(dados.message || 'Status de execução atualizado.');
+  });
+}
+
+function atualizarStatusTrajetoria(msg, status='info') {
+  const el = document.getElementById('trajectory-status');
+  if (!el) return;
+  el.textContent = msg || '';
+  el.className = 'status-banner ' + (status === 'success' || status === 'ok' ? 'ok' : status === 'error' || status === 'err' ? 'err' : 'warn');
+}
+
+let validarTrajTimer = null;
+function validarTrajetoriaAtual() {
+  clearTimeout(validarTrajTimer);
+  validarTrajTimer = setTimeout(() => {
+    fetch('/api/trajetoria/validar', { method: 'POST' })
+      .then(async r => ({ ok: r.ok, data: await r.json().catch(() => ({})) }))
+      .then(({ok, data}) => {
+        if (ok && data.ok) {
+          atualizarStatusTrajetoria(`Trajetória válida: ${data.segments?.length || 0} segmento(s).`, 'ok');
+        } else {
+          atualizarStatusTrajetoria(data.message || 'Trajetória inválida ou incompleta.', 'warn');
+        }
+      })
+      .catch(() => {
+        if (!socketConectado) atualizarStatusTrajetoria('Backend não conectado. Validação indisponível.', 'warn');
+      });
+  }, 180);
 }
 
 function atualizarTcpNumerico(tcp) {
@@ -650,9 +694,16 @@ function ajustarVelocidades() {
 
 function executarTrajetoria() {
   fetch('/api/trajetoria/executar', { method: 'POST' })
-    .then(r => r.json())
-    .then(d => toast(d.message || 'Trajetória iniciada.'))
-    .catch(() => toast('Backend não conectado.'));
+    .then(async r => ({ ok: r.ok, data: await r.json().catch(() => ({})) }))
+    .then(({ok, data}) => {
+      const msg = data.message || (ok ? 'Trajetória iniciada.' : 'Trajetória inválida.');
+      atualizarStatusTrajetoria(msg, ok ? 'ok' : 'err');
+      toast(msg);
+    })
+    .catch(() => {
+      atualizarStatusTrajetoria('Backend não conectado. Nenhum movimento foi enviado ao robô.', 'err');
+      toast('Backend não conectado.');
+    });
 }
 
 function limparTrajetoria() {
@@ -661,8 +712,9 @@ function limparTrajetoria() {
     .finally(() => {
       estadoLocal.pontos = [];
       renderizarListaPontos([]);
+      atualizarStatusTrajetoria('Trajetória limpa. Adicione pelo menos 2 pontos para executar.', 'warn');
       desenharVisualizacao();
-      toast('Trajetória limpa na interface.');
+      toast('Trajetória limpa.');
     });
 }
 
@@ -671,11 +723,15 @@ function inserirPontoManual(tipo) {
     method: 'POST',
     headers: {'Content-Type': 'application/json'},
     body: JSON.stringify({ tipo })
+  }).then(r => r.json()).then(d => {
+    if (d.plan) atualizarStatusTrajetoria(d.plan.message || d.message, d.plan.ok ? 'ok' : 'warn');
+    toast(d.message || `Ponto ${tipo} adicionado.`);
   }).catch(() => {
     const pose = [...estadoLocal.tcp];
     estadoLocal.pontos.push([tipo, pose]);
     renderizarListaPontos(estadoLocal.pontos);
     desenharVisualizacao();
+    atualizarStatusTrajetoria('Backend não conectado. Ponto adicionado apenas na interface visual.', 'warn');
     toast(`Ponto ${tipo === 'L' ? 'linear' : 'circular'} adicionado em modo visual.`);
   });
 }
@@ -723,25 +779,35 @@ function atualizarDiagnosticosReais(diag) {
 
   const telemetryState = document.getElementById('telemetry-state');
   const telemetryDetail = document.getElementById('telemetry-detail');
+  const telemetryWarning = document.getElementById('telemetry-warning');
   const origem = diag.telemetria_origem || (diag.telemetria_real ? 'backend' : 'placeholder');
   const status = diag.telemetria_status || '';
   if (telemetryState) {
     if (diag.telemetria_real) {
       telemetryState.className = 'trend-badge ok';
       telemetryState.innerText = 'Real';
-    } else if (diag.uptime_fonte && String(diag.uptime_fonte).includes('simul')) {
+    } else if (origem && String(origem).toLowerCase().includes('sim')) {
       telemetryState.className = 'trend-badge attention';
       telemetryState.innerText = 'Simulado';
     } else {
       telemetryState.className = 'trend-badge attention';
-      telemetryState.innerText = 'Placeholder';
+      telemetryState.innerText = 'Não validada';
     }
     telemetryState.title = `${origem} · ${status}`;
   }
   if (telemetryDetail) {
     telemetryDetail.innerText = diag.telemetria_real
-      ? `Fonte real: ${origem}.`
-      : `Sem fonte real confirmada. ${status || 'Valores podem ser placeholder/último estado.'}`;
+      ? `Fonte real validada: ${origem} · parser ${diag.telemetria_parser || 'n/d'}.`
+      : `Sem fonte real validada. ${status || 'Valores não devem ser usados como dado real do robô.'}`;
+  }
+  if (telemetryWarning) {
+    if (diag.telemetria_real) {
+      telemetryWarning.className = 'telemetry-warning ok';
+      telemetryWarning.innerText = `Telemetria real validada via ${origem} (${diag.telemetria_parser || 'parser n/d'}).`;
+    } else {
+      telemetryWarning.className = 'telemetry-warning err';
+      telemetryWarning.innerText = `TELEMETRIA NÃO VALIDADA — ${status || 'sem dados reais confirmados do controlador JAKA'}.`;
+    }
   }
 
   const uptime = document.getElementById('kpi-uptime');
@@ -774,8 +840,8 @@ function atualizarDiagnosticosReais(diag) {
 }
 
 function atualizarIndicadoresDemo() {
-  // Se há backend conectado mandando diagnóstico, nunca sobrescreve com simulação local.
-  // Assim a tela não mascara falha de telemetria real como se fosse dado do robô.
+  // Se há backend conectado, mesmo sem telemetria real, NÃO inventa valores bonitos.
+  // O backend deve dizer explicitamente se é real, simulado ou não validado.
   if (socketConectado && recebeuDiagnosticoBackend && (Date.now() - ultimoDiagnosticoMs) < 4000) return;
 
   const agoraMs = (window.performance && performance.now) ? performance.now() : Date.now();
@@ -787,8 +853,10 @@ function atualizarIndicadoresDemo() {
   }
   const telemetryState = document.getElementById('telemetry-state');
   const telemetryDetail = document.getElementById('telemetry-detail');
+  const telemetryWarning = document.getElementById('telemetry-warning');
   if (telemetryState) { telemetryState.className = 'trend-badge attention'; telemetryState.innerText = 'Demo'; }
   if (telemetryDetail) telemetryDetail.innerText = 'Sem backend conectado. Valores simulados localmente.';
+  if (telemetryWarning) { telemetryWarning.className = 'telemetry-warning'; telemetryWarning.innerText = 'Modo demo local: backend não conectado.'; }
 
   for (let j = 1; j <= 6; j++) {
     const baseCorr = Math.sin(Date.now() / 600 + j) * 1.5 + 2.5;
@@ -804,6 +872,7 @@ setInterval(atualizarIndicadoresDemo, 300);
 
 // Estado inicial para validação visual sem backend
 renderizarListaPontos([]);
+atualizarStatusTrajetoria('Aguardando pontos. Adicione pelo menos 2 pontos para executar.', 'warn');
 setTimeout(resizeCanvas, 80);
 </script>
 </body>
