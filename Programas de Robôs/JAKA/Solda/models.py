@@ -110,7 +110,7 @@ def normalize_raw_points(raw_points: Sequence[Any]) -> Tuple[List[Waypoint], Lis
 
         pose_raw = raw[1]
         if not isinstance(pose_raw, (list, tuple)) or len(pose_raw) < 6:
-            errors.append(f"Ponto #{idx + 1} tem pose inválida. Esperado [x,y,z,rx,ry,rz].")
+            errors.append(f"Ponto #{idx + 1} tem pose inválida. Esperado [x,y,z,rx,ry,rz] absolutos.")
             continue
 
         try:

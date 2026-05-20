@@ -388,7 +388,7 @@ class RobotAdapter:
                 self._emit_exec_status(msg, "error")
                 return msg
 
-            clearance = [0, 0, 50, 0, 0, 0]
+            clearance = [0, 0, 50, 0, 0, 0]  # V16: clearance só altera Z; RX/RY/RZ preservados
             ok, msg = self._fase_entrada(plan.entry.pose, clearance)
             if not ok:
                 self._emit_exec_status(msg, "error")
@@ -575,6 +575,9 @@ class RobotAdapter:
         # Ponto SEMPRE absoluto e completo: [x,y,z,rx,ry,rz].
         # Não reduzir para XY e não transformar em relativo.
         pose = [float(v) for v in pose[:6]]
+        if len(pose) != 6:
+            self.definir_erro_trajetoria(["Falha interna: pose TCP incompleta. Esperado [x,y,z,rx,ry,rz]."])
+            return False
         with self._state_lock:
             self.lista_pontos.append((tipo, pose))
             idx = len(self.lista_pontos)

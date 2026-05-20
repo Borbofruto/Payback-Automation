@@ -111,13 +111,16 @@ canvas{width:100%;height:100%;display:block;background:#fff;position:relative;z-
 .slider-container{display:flex;align-items:center;gap:10px;}
 .slider-container input[type="range"]{flex:1;accent-color:var(--ac);height:6px;}
 .slider-container span{min-width:72px;text-align:right;font-weight:900;font-size:calc(12px * var(--fs));color:var(--nv);font-variant-numeric:tabular-nums;}
-.listbox-pontos{border:1px solid var(--bd);border-radius:var(--r6);height:190px;overflow-y:auto;background:var(--bg);}
-.ponto-item{padding:10px 12px;border-bottom:1px solid var(--bd);font-size:calc(12px * var(--fs));display:flex;justify-content:space-between;align-items:center;gap:8px;}
+.listbox-pontos{border:1px solid var(--bd);border-radius:var(--r6);height:245px;overflow-y:auto;background:var(--bg);}
+.ponto-item{padding:9px 10px;border-bottom:1px solid var(--bd);font-size:calc(11px * var(--fs));display:grid;grid-template-columns:1fr auto;align-items:start;gap:8px;}
 .ponto-item:last-child{border-bottom:none;}
 .ponto-empty{display:flex;align-items:center;justify-content:center;height:100%;color:var(--t3);font-size:calc(11px * var(--fs));font-weight:700;text-align:center;padding:14px;}
-.ponto-main{min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:var(--t2);}
+.ponto-main{min-width:0;color:var(--t2);line-height:1.35;}
 .ponto-main strong{color:var(--t1);}
-.ponto-tipo{padding:2px 7px;border-radius:var(--rp);font-weight:900;font-size:calc(10px * var(--fs));color:white;flex-shrink:0;}
+.pose-line{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.pose-line.pos{font-weight:800;color:var(--t1);}
+.pose-line.rot{font-size:calc(10px * var(--fs));color:var(--mut);}
+.ponto-tipo{padding:3px 7px;border-radius:var(--rp);font-weight:900;font-size:calc(10px * var(--fs));color:white;flex-shrink:0;}
 .ponto-tipo.L{background:var(--er);}
 .ponto-tipo.C{background:var(--wn);}
 .btn-row{display:grid;grid-template-columns:repeat(2,1fr);gap:8px;margin-top:8px;}
@@ -240,7 +243,7 @@ canvas{width:100%;height:100%;display:block;background:#fff;position:relative;z-
       <a onclick="toast('Parâmetros avançados entram depois da validação visual')"><i class="fa-solid fa-sliders"></i> Parâmetros</a>
       <a onclick="toast('Log operacional será conectado na etapa de backend')"><i class="fa-solid fa-scroll"></i> Log</a>
       <div class="nav-spacer"></div>
-      <div class="nav-foot">Módulo de solda<br>Versão conectada V2<br>Backend Python/Socket.IO</div>
+      <div class="nav-foot">Módulo de solda<br>Versão V16 · pose absoluta<br>Backend Python/Socket.IO</div>
     </nav>
 
     <main class="art">
@@ -248,7 +251,7 @@ canvas{width:100%;height:100%;display:block;background:#fff;position:relative;z-
         <div class="visual-main">
           <div class="visual-head">
             <h4><i class="fa-solid fa-crosshairs"></i> Trajetória programada</h4>
-            <span class="meta">canvas XY · pontos lineares/circulares · mira TCP</span>
+            <span class="meta">canvas XY · poses TCP absolutas · mira TCP</span>
             <div class="right"><button class="btn btn-g btn-sm" onclick="desenharVisualizacao()"><i class="fa-solid fa-rotate"></i> Redesenhar</button></div>
           </div>
           <div class="canvas-wrapper"><canvas id="jakaCanvas"></canvas></div>
@@ -510,6 +513,16 @@ function atualizarTcpNumerico(tcp) {
   });
 }
 
+function fmtPoseValue(v, digits=1) {
+  const n = Number(v);
+  return Number.isFinite(n) ? n.toFixed(digits) : '0.0';
+}
+
+function pose6(pose) {
+  const arr = Array.isArray(pose) ? pose : [];
+  return [0,1,2,3,4,5].map(i => Number(arr[i] ?? 0));
+}
+
 function renderizarListaPontos(pontos) {
   const container = document.getElementById('lista-pontos-container');
   container.innerHTML = '';
@@ -518,12 +531,17 @@ function renderizarListaPontos(pontos) {
     return;
   }
   pontos.forEach((p, idx) => {
-    const tipo = p[0] || 'L';
-    const pose = p[1] || [0,0,0,0,0,0];
+    const tipo = String(p?.[0] || 'L').toUpperCase();
+    const pose = pose6(p?.[1]);
     const item = document.createElement('div');
     item.className = 'ponto-item';
     const msg = tipo === 'L' ? 'Linear' : 'Circular';
-    item.innerHTML = `<span class="ponto-main"><strong>#${idx+1}</strong> — X: ${Number(pose[0]||0).toFixed(1)} · Y: ${Number(pose[1]||0).toFixed(1)}</span><span class="ponto-tipo ${tipo}">${msg}</span>`;
+    item.innerHTML = `
+      <span class="ponto-main">
+        <span class="pose-line pos"><strong>#${idx+1}</strong> — X ${fmtPoseValue(pose[0],1)} · Y ${fmtPoseValue(pose[1],1)} · Z ${fmtPoseValue(pose[2],1)}</span>
+        <span class="pose-line rot">RX ${fmtPoseValue(pose[3],4)} · RY ${fmtPoseValue(pose[4],4)} · RZ ${fmtPoseValue(pose[5],4)} rad</span>
+      </span>
+      <span class="ponto-tipo ${tipo}">${msg}</span>`;
     container.appendChild(item);
   });
 }
@@ -626,6 +644,28 @@ function drawJakaMoveCArc(startPose, midPose, endPose) {
   drawPolyline(out);
 }
 
+function desenharMarcadorPose(pose, label, cor='#28323D', r=5) {
+  const p = projectPoseToCanvas(v3FromPose(pose));
+  ctx.fillStyle = cor;
+  ctx.beginPath();
+  ctx.arc(p.x, p.y, r, 0, 2*Math.PI);
+  ctx.fill();
+  ctx.font = '10px Segoe UI';
+  ctx.fillStyle = '#28323D';
+  if (label) ctx.fillText(label, p.x + 10, p.y - 10);
+}
+
+function desenharLinhaPose(a, b, cor='#CC3340', largura=3) {
+  const p0 = projectPoseToCanvas(v3FromPose(a));
+  const p1 = projectPoseToCanvas(v3FromPose(b));
+  ctx.strokeStyle = cor;
+  ctx.lineWidth = largura;
+  ctx.beginPath();
+  ctx.moveTo(p0.x, p0.y);
+  ctx.lineTo(p1.x, p1.y);
+  ctx.stroke();
+}
+
 function desenharVisualizacao() {
   if (!ctx || !canvas) return;
   const rect = canvas.getBoundingClientRect();
@@ -633,13 +673,11 @@ function desenharVisualizacao() {
   const h = rect.height || 520;
   ctx.clearRect(0,0,w,h);
 
-  // Grade industrial sutil
   ctx.strokeStyle = '#EEF3F8';
   ctx.lineWidth = 1;
   for (let x = 0; x < w; x += 40) { ctx.beginPath(); ctx.moveTo(x,0); ctx.lineTo(x,h); ctx.stroke(); }
   for (let y = 0; y < h; y += 40) { ctx.beginPath(); ctx.moveTo(0,y); ctx.lineTo(w,y); ctx.stroke(); }
 
-  // Eixos de referência discretos
   ctx.strokeStyle = '#DDE4EC';
   ctx.lineWidth = 1.5;
   ctx.beginPath(); ctx.moveTo(0, offset_y); ctx.lineTo(w, offset_y); ctx.stroke();
@@ -647,71 +685,67 @@ function desenharVisualizacao() {
 
   const pts = estadoLocal.pontos || [];
   if (pts.length > 0) {
-    let i = 0;
-    while (i < pts.length) {
-      let tipo = pts[i][0];
-      let p_atual = pts[i][1];
-      if (i === 0) {
-        let cx = offset_x + (p_atual[0] * escala);
-        let cy = offset_y - (p_atual[1] * escala);
-        ctx.fillStyle = '#003865';
-        ctx.beginPath(); ctx.arc(cx, cy, 6, 0, 2*Math.PI); ctx.fill();
-        ctx.font = 'bold 11px Segoe UI';
-        ctx.fillStyle = '#28323D';
-        ctx.fillText('P1 (Início)', cx + 10, cy - 10);
-        i++;
-        continue;
-      }
-      let p_anterior = pts[i-1][1];
-      let x0 = offset_x + (p_anterior[0] * escala);
-      let y0 = offset_y - (p_anterior[1] * escala);
-      if (tipo === 'C' && (i + 1) < pts.length && pts[i+1][0] === 'C') {
-        let p_meio = p_atual;
-        let p_fim = pts[i+1][1];
-        let x1 = offset_x + (p_meio[0] * escala);
-        let y1 = offset_y - (p_meio[1] * escala);
-        let x2 = offset_x + (p_fim[0] * escala);
-        let y2 = offset_y - (p_fim[1] * escala);
+    // A visualização segue a mesma semântica do backend:
+    // - Ponto #1 é consumido pela entrada.
+    // - L gera MoveL até a pose absoluta.
+    // - C exige grupo C,C,C: início, passagem e fim.
+    // - Se o arco aparece no meio, desenha primeiro MoveL até o C inicial.
+    let currentPose = pose6(pts[0]?.[1]);
+    desenharMarcadorPose(currentPose, 'P1 (entrada)', '#003865', 6);
+
+    let i = 1;
+    if (String(pts[0]?.[0] || '').toUpperCase() === 'C') {
+      if (pts.length >= 3 && String(pts[1]?.[0] || '').toUpperCase() === 'C' && String(pts[2]?.[0] || '').toUpperCase() === 'C') {
         ctx.strokeStyle = '#E0A100';
         ctx.lineWidth = 3;
+        drawJakaMoveCArc(pose6(pts[0][1]), pose6(pts[1][1]), pose6(pts[2][1]));
+        desenharMarcadorPose(pose6(pts[1][1]), 'C2', '#E0A100', 5);
+        desenharMarcadorPose(pose6(pts[2][1]), 'C3', '#E0A100', 5);
+        currentPose = pose6(pts[2][1]);
+        i = 3;
+      }
+    }
 
-        // MoveC JAKA: arco circular definido pelo ponto inicial atual, ponto de passagem e ponto final.
-        // Desenhamos a circunferencia 3D e projetamos em XY para bater melhor com a trajetoria real do TCP.
-        drawJakaMoveCArc(p_anterior, p_meio, p_fim);
-
-        // Marcadores dos pontos reais salvos.
-        ctx.fillStyle = '#E0A100';
-        ctx.beginPath(); ctx.arc(x1, y1, 5, 0, 2*Math.PI); ctx.fill();
-        ctx.beginPath(); ctx.arc(x2, y2, 5, 0, 2*Math.PI); ctx.fill();
-        ctx.fillStyle = '#28323D';
-        ctx.font = '10px Segoe UI';
-        ctx.fillText(`C${i+1}`, x1 + 10, y1 - 10);
-        ctx.fillText(`C${i+2}`, x2 + 10, y2 - 10);
-        i += 2;
+    while (i < pts.length) {
+      const tipo = String(pts[i]?.[0] || 'L').toUpperCase();
+      const pose = pose6(pts[i]?.[1]);
+      if (tipo === 'C') {
+        if (i + 2 < pts.length && String(pts[i+1]?.[0] || '').toUpperCase() === 'C' && String(pts[i+2]?.[0] || '').toUpperCase() === 'C') {
+          desenharLinhaPose(currentPose, pose, '#CC3340', 2.5);
+          desenharMarcadorPose(pose, `C${i+1} início`, '#E0A100', 5);
+          ctx.strokeStyle = '#E0A100';
+          ctx.lineWidth = 3;
+          drawJakaMoveCArc(pose, pose6(pts[i+1][1]), pose6(pts[i+2][1]));
+          desenharMarcadorPose(pose6(pts[i+1][1]), `C${i+2} passagem`, '#E0A100', 5);
+          desenharMarcadorPose(pose6(pts[i+2][1]), `C${i+3} fim`, '#E0A100', 5);
+          currentPose = pose6(pts[i+2][1]);
+          i += 3;
+        } else {
+          // Bloco C incompleto: marca visualmente em vermelho e deixa o backend/modal explicar o erro.
+          desenharLinhaPose(currentPose, pose, '#CC3340', 2);
+          desenharMarcadorPose(pose, `C${i+1} incompleto`, '#CC3340', 5);
+          currentPose = pose;
+          i += 1;
+        }
       } else {
-        let x1 = offset_x + (p_atual[0] * escala);
-        let y1 = offset_y - (p_atual[1] * escala);
-        ctx.strokeStyle = '#CC3340';
-        ctx.lineWidth = 3;
-        ctx.beginPath(); ctx.moveTo(x0, y0); ctx.lineTo(x1, y1); ctx.stroke();
-        ctx.fillStyle = '#28323D';
-        ctx.beginPath(); ctx.arc(x1, y1, 5, 0, 2*Math.PI); ctx.fill();
-        ctx.font = '10px Segoe UI';
-        ctx.fillText(`L${i+1}`, x1 + 10, y1 - 10);
-        i++;
+        desenharLinhaPose(currentPose, pose, '#CC3340', 3);
+        desenharMarcadorPose(pose, `L${i+1}`, '#28323D', 5);
+        currentPose = pose;
+        i += 1;
       }
     }
   }
 
-  // Cursor TCP atual
-  let tx = offset_x + ((estadoLocal.tcp[0] || 0) * escala);
-  let ty = offset_y - ((estadoLocal.tcp[1] || 0) * escala);
+  const tcp = pose6(estadoLocal.tcp);
+  let tx = offset_x + (tcp[0] * escala);
+  let ty = offset_y - (tcp[1] * escala);
   ctx.strokeStyle = '#00AED6';
   ctx.lineWidth = 2;
   ctx.beginPath(); ctx.moveTo(tx - 18, ty); ctx.lineTo(tx + 18, ty); ctx.stroke();
   ctx.beginPath(); ctx.moveTo(tx, ty - 18); ctx.lineTo(tx, ty + 18); ctx.stroke();
   ctx.beginPath(); ctx.arc(tx, ty, 5, 0, 2*Math.PI); ctx.fillStyle = '#003865'; ctx.fill(); ctx.stroke();
 }
+
 
 function ajustarVelocidades() {
   const rep = document.getElementById('sl-repro').value;
