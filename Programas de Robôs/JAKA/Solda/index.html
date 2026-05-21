@@ -205,6 +205,480 @@ canvas{width:100%;height:100%;display:block;background:#fff;position:relative;z-
 .modal-erro-foot{display:flex;justify-content:flex-end;gap:10px;padding:16px 24px;background:#F8FAFC;border-top:1px solid var(--bd);}
 .modal-erro-foot .btn{min-width:140px;}
 
+
+/* --- Gestão de células V17.3: somente frontend --- */
+.cell-mgmt{flex:1;display:flex;flex-direction:column;gap:12px;min-width:0;min-height:0;overflow:hidden;}
+.mgmt-top{display:flex;align-items:flex-start;justify-content:space-between;gap:18px;flex-shrink:0;}
+.mgmt-lead{color:var(--t2);font-size:calc(12px * var(--fs));line-height:1.5;margin-top:4px;max-width:900px;}
+.mgmt-kpis{display:flex;gap:10px;align-items:stretch;}
+.mgmt-kpis>div{min-width:118px;background:var(--bg);border:1px solid var(--bd);border-radius:var(--r8);padding:10px 12px;text-align:center;}
+.mgmt-kpis strong{display:block;font-size:calc(18px * var(--fs));font-weight:900;color:var(--nv);font-variant-numeric:tabular-nums;}
+.mgmt-kpis span{display:block;font-size:calc(10px * var(--fs));font-weight:800;color:var(--t3);text-transform:uppercase;letter-spacing:.06em;}
+.mgmt-warning{margin-bottom:0!important;flex-shrink:0;}
+.cell-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));grid-template-rows:repeat(2,minmax(248px,1fr));gap:12px;min-height:0;flex:1;align-items:stretch;overflow:auto;padding-right:2px;}
+.cell-card{background:var(--sf);border:1px solid var(--bd);border-radius:var(--r8);box-shadow:var(--sh);padding:12px;display:flex;flex-direction:column;gap:10px;min-width:0;min-height:0;position:relative;overflow:hidden;}
+.cell-card.live{border-top:4px solid var(--ac);}
+.cell-card-head{display:flex;align-items:flex-start;justify-content:space-between;gap:10px;}
+.cell-kind{font-size:calc(10px * var(--fs));font-weight:900;color:var(--ac);text-transform:uppercase;letter-spacing:.08em;}
+.cell-card h3{font-size:calc(18px * var(--fs));color:var(--nv);font-weight:900;margin-top:2px;}
+.cell-health-row{display:grid;grid-template-columns:96px 1fr;gap:12px;align-items:center;}
+.health-gauge{width:96px;height:58px;position:relative;overflow:hidden;flex-shrink:0;}
+.health-gauge.small{width:82px;height:52px;flex-shrink:0;}
+.health-arc{position:absolute;left:0;right:0;top:0;margin:auto;width:96px;height:96px;border-radius:50%;background:conic-gradient(from 270deg,#9BB8C8 0deg 45deg,var(--ok) 45deg 90deg,var(--wn) 90deg 135deg,var(--er) 135deg 180deg,transparent 180deg 360deg);}
+.health-gauge.small .health-arc{width:82px;height:82px;}
+.health-cover{position:absolute;left:14px;top:14px;width:68px;height:68px;border-radius:50%;background:var(--sf);box-shadow:0 0 0 1px var(--bd) inset;}
+.health-gauge.small .health-cover{left:12px;top:12px;width:58px;height:58px;}
+.health-needle{position:absolute;left:47px;top:42px;width:2px;height:36px;background:var(--nv);border-radius:2px;transform-origin:50% 100%;transform:rotate(-35deg);z-index:2;box-shadow:0 0 0 1px rgba(255,255,255,.55);}
+.health-gauge.small .health-needle{left:40px;top:36px;height:30px;}
+.health-gauge[data-level="1"] .health-needle{transform:rotate(-67deg);}
+.health-gauge[data-level="2"] .health-needle{transform:rotate(-23deg);}
+.health-gauge[data-level="3"] .health-needle{transform:rotate(23deg);}
+.health-gauge[data-level="4"] .health-needle{transform:rotate(67deg);}
+.health-text label{display:block;font-size:calc(10px * var(--fs));font-weight:900;color:var(--t3);text-transform:uppercase;letter-spacing:.08em;}
+.health-text strong{display:block;font-size:calc(17px * var(--fs));font-weight:900;color:var(--nv);line-height:1.08;margin:3px 0;}
+.health-text span{display:block;color:var(--t2);font-size:calc(10px * var(--fs));line-height:1.3;}
+.cell-log-strip{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:6px;}
+.log-pill{display:grid;grid-template-columns:10px 1fr auto;align-items:center;gap:6px;background:var(--bg);border:1px solid var(--bd);border-radius:var(--r6);padding:6px 8px;font-size:calc(10px * var(--fs));font-weight:800;color:var(--t2);min-width:0;}
+.log-pill i{width:9px;height:9px;border-radius:50%;display:block;background:#9BB8C8;}.log-pill.under i{background:#9BB8C8;}.log-pill.warn i{background:var(--wn);}.log-pill.crit i{background:var(--er);}
+.log-pill strong{font-size:calc(12px * var(--fs));font-weight:900;color:var(--nv);}
+.cell-meta{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:0;}
+.cell-meta>div{background:#F8FAFC;border:1px solid var(--bd);border-radius:var(--r6);padding:7px 9px;}
+.cell-meta span{display:block;font-size:calc(9px * var(--fs));font-weight:900;color:var(--t3);text-transform:uppercase;letter-spacing:.07em;}
+.cell-meta strong{font-size:calc(12px * var(--fs));font-weight:900;color:var(--nv);}
+.cell-expand{width:100%;flex-shrink:0;margin-top:auto;padding:10px 12px;}
+.cell-card.ghost{opacity:.72;background:linear-gradient(135deg,#fff,#F3F6F9);border-style:dashed;justify-content:center;text-align:center;align-items:center;min-height:248px;}
+.ghost-meter{width:118px;height:46px;border-radius:60px 60px 0 0;background:linear-gradient(90deg,#DCE5EC,#E6EDF2,#DCE5EC);opacity:.7;position:relative;}
+.ghost-meter:after{content:"";position:absolute;left:50%;bottom:0;width:2px;height:34px;background:#B6C4CF;transform:rotate(-35deg);transform-origin:bottom;}
+.cell-card.ghost h3{color:#7D8D9A;}.cell-card.ghost p{color:var(--t3);font-weight:700;}
+.cell-detail{position:absolute;inset:12px;z-index:6;background:var(--bg);display:flex;flex-direction:column;gap:12px;min-height:0;overflow:auto;border-radius:14px;}.cell-detail.hidden{display:none;}
+.detail-head{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;flex-shrink:0;}.detail-head p{color:var(--t2);font-size:calc(12px * var(--fs));line-height:1.45;max-width:920px;}
+.detail-dashboard{display:grid;grid-template-columns:1fr 1fr 1.05fr;grid-template-rows:minmax(300px,0.95fr) minmax(300px,1.05fr);gap:12px;min-height:0;flex:1;align-content:stretch;}
+.dash-card{background:var(--sf);border:1px solid var(--bd);border-radius:var(--r8);box-shadow:var(--sh);padding:12px;display:flex;flex-direction:column;gap:10px;min-width:0;min-height:0;overflow:hidden;}
+.dash-card.joints{grid-column:1 / 4;}
+.dash-head{display:flex;align-items:flex-start;justify-content:space-between;gap:10px;flex-shrink:0;}.dash-head h3{font-size:calc(15px * var(--fs));font-weight:900;color:var(--nv);display:flex;align-items:center;gap:8px;}.dash-head span{font-size:calc(11px * var(--fs));font-weight:900;color:var(--t3);text-align:right;}
+.mini-health-row{display:flex;align-items:center;gap:12px;}.mini-health-row strong{font-size:calc(17px * var(--fs));font-weight:900;color:var(--nv);}
+.notice-list{display:grid;grid-template-columns:1fr;gap:7px;}.notice-list div{display:flex;justify-content:space-between;align-items:center;background:var(--bg);border:1px solid var(--bd);border-radius:var(--r6);padding:7px 9px;font-size:calc(11px * var(--fs));font-weight:800;color:var(--t2);min-height:38px;}.notice-list strong{color:var(--nv);font-size:calc(13px * var(--fs));}
+.expand-line{border:0;background:transparent;color:var(--t3);font-size:calc(11px * var(--fs));font-weight:900;text-align:left;cursor:pointer;text-transform:none;margin-top:auto;padding-top:2px;}.expand-line:hover{color:var(--ac);}.collapse-area{display:none;min-height:0;overflow:auto;border-top:1px solid var(--bd);padding-top:8px;}.collapse-area.open{display:block;}
+.bar-graph-container.compact{gap:8px;}.gauges-container.compact{grid-template-columns:repeat(6,1fr);gap:8px;}.gauges-container.compact .gauge-circle{width:58px;height:58px;}.gauges-container.compact .gauge-circle:before{width:44px;height:44px;}.gauges-container.compact .gauge-value{font-size:calc(10px * var(--fs));}
+.filter-row{display:flex;gap:6px;flex-wrap:wrap;}.chip{border:1px solid var(--bd);background:var(--bg);color:var(--t2);border-radius:var(--rp);padding:6px 9px;font-size:calc(10px * var(--fs));font-weight:900;cursor:pointer;}.chip.active{background:var(--acs);color:var(--nv);border-color:rgba(0,174,214,.35);}
+.event-feed{display:flex;flex-direction:column;gap:8px;overflow:auto;min-height:220px;}.event{border-left:4px solid var(--ac);background:var(--bg);border-radius:0 var(--r6) var(--r6) 0;padding:9px 10px;display:grid;grid-template-columns:1fr auto;gap:3px 10px;border-top:1px solid var(--bd);border-right:1px solid var(--bd);border-bottom:1px solid var(--bd);}.event strong{font-size:calc(12px * var(--fs));color:var(--nv);}.event span{font-size:calc(11px * var(--fs));color:var(--t2);}.event em{grid-row:1 / 3;grid-column:2;font-style:normal;font-size:calc(10px * var(--fs));font-weight:900;text-transform:uppercase;align-self:center;color:var(--t3);}.event.warning{border-left-color:var(--wn);}.event.critical{border-left-color:var(--er);}.event.info{border-left-color:#9BB8C8;}
+.joint-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));grid-template-rows:repeat(2,minmax(120px,1fr));gap:10px;min-height:0;flex:1;}.joint-card{background:var(--bg);border:1px solid var(--bd);border-radius:var(--r8);padding:10px;overflow:auto;min-height:128px;}.joint-card summary{list-style:none;display:flex;flex-direction:column;gap:7px;cursor:pointer;}.joint-card summary::-webkit-details-marker{display:none;}.joint-card summary span{font-size:calc(18px * var(--fs));font-weight:900;color:var(--nv);}.joint-card summary strong{font-size:calc(11px * var(--fs));font-weight:900;color:var(--ok);}.joint-card p{font-size:calc(11px * var(--fs));color:var(--t2);line-height:1.4;margin-top:8px;}
+@media(max-width:1300px){.cell-grid{grid-template-columns:repeat(2,1fr);grid-template-rows:repeat(3,minmax(220px,1fr));}.cell-log-strip{grid-template-columns:1fr;}.detail-dashboard{grid-template-columns:1fr 1fr;grid-template-rows:auto auto 1fr;}.dash-card.logs{grid-column:1 / 3;}.dash-card.joints{grid-column:1 / 3;}.joint-grid{grid-template-columns:repeat(2,1fr);grid-template-rows:repeat(3,minmax(120px,1fr));}.mgmt-top{flex-direction:column;}.mgmt-kpis{width:100%;}.mgmt-kpis>div{flex:1;}}
+@media(max-width:900px){.cell-grid{grid-template-columns:1fr;grid-template-rows:none;grid-auto-rows:minmax(240px,auto);}.cell-meta{grid-template-columns:1fr;}.detail-dashboard{grid-template-columns:1fr;grid-template-rows:auto;}.dash-card.logs,.dash-card.joints{grid-column:auto;}.joint-grid{grid-template-columns:1fr;grid-template-rows:none;} .detail-head{flex-direction:column;}}
+
+
+
+/* === V17.7 — Gestão densa sem zona morta (frontend-only) === */
+:root{
+  --gestao-gap: clamp(8px, .75vw, 14px);
+  --gestao-pad: clamp(10px, .8vw, 16px);
+}
+#page-gestao.page{min-height:0;overflow:hidden;}
+#page-gestao .card{min-height:0;}
+.cell-mgmt{gap:var(--gestao-gap);overflow:hidden;}
+.mgmt-top.card{padding:clamp(10px,.8vw,14px) clamp(12px,1vw,18px);}
+.mgmt-lead{max-width:min(980px,62vw);font-size:clamp(11px,.72vw,13px);}
+.mgmt-kpis>div{padding:clamp(7px,.6vw,10px) clamp(9px,.7vw,12px);min-width:clamp(96px,7.4vw,132px);}
+.mgmt-kpis strong{font-size:clamp(16px,1.25vw,22px);}
+.mgmt-warning{padding:9px 14px!important;}
+
+.cell-grid{
+  grid-template-columns:repeat(3,minmax(260px,1fr));
+  grid-template-rows:repeat(2,minmax(230px,1fr));
+  gap:var(--gestao-gap);
+  overflow:auto;
+  padding:1px 4px 4px 1px;
+  scrollbar-gutter:stable;
+}
+.cell-card{padding:var(--gestao-pad);gap:clamp(8px,.65vw,12px);}
+.cell-card.live{padding-bottom:clamp(54px,4.2vh,66px)!important;min-height:230px;}
+.cell-card.live .cell-expand{
+  position:absolute;
+  left:var(--gestao-pad);
+  right:var(--gestao-pad);
+  bottom:var(--gestao-pad);
+  width:auto;
+  margin:0;
+  min-height:38px;
+  z-index:3;
+}
+.cell-card h3{font-size:clamp(15px,1.05vw,20px);line-height:1.05;}
+.cell-card-head{gap:8px;}
+.cell-kind{font-size:clamp(9px,.62vw,10px);}
+.cell-health-row{grid-template-columns:clamp(82px,6vw,108px) 1fr;gap:clamp(8px,.7vw,14px);}
+.health-text strong{font-size:clamp(15px,1vw,20px);}
+.health-text span{font-size:clamp(9px,.65vw,11px);}
+.cell-log-strip{grid-template-columns:repeat(3,minmax(0,1fr));gap:6px;}
+.log-pill{padding:6px 8px;font-size:clamp(9px,.62vw,11px);min-width:0;}
+.log-pill span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.cell-meta{grid-template-columns:repeat(2,minmax(0,1fr));gap:6px;margin-top:0;}
+.cell-meta>div{padding:6px 8px;min-width:0;}
+.cell-meta strong{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.cell-card.ghost{min-height:230px;}
+
+/* velocímetro: sem folga nos 180° úteis */
+.health-gauge{width:clamp(82px,5.9vw,108px);height:clamp(50px,3.65vw,68px);}
+.health-gauge.small{width:clamp(78px,5.2vw,96px);height:clamp(48px,3.1vw,62px);}
+.health-arc{
+  width:100%;height:calc(clamp(82px,5.9vw,108px));
+  background:conic-gradient(from 270deg,
+    #9BB8C8 0deg 45deg,
+    var(--ok) 45deg 90deg,
+    var(--wn) 90deg 135deg,
+    var(--er) 135deg 180deg,
+    transparent 180deg 360deg);
+}
+.health-gauge.small .health-arc{width:100%;height:clamp(78px,5.2vw,96px);}
+.health-cover{left:14%;top:20%;width:72%;height:72%;}
+.health-gauge.small .health-cover{left:14%;top:20%;width:72%;height:72%;}
+.health-needle{left:49%;top:62%;height:58%;}
+.health-gauge.small .health-needle{left:49%;top:62%;height:56%;}
+
+.cell-detail{inset:8px!important;gap:var(--gestao-gap);overflow:hidden!important;background:var(--bg);}
+.detail-head.card{padding:10px 14px;}
+.detail-head p{font-size:clamp(10px,.68vw,12px);max-width:80vw;}
+.detail-dashboard{
+  grid-template-columns:1fr 1fr 1.05fr;
+  grid-template-rows:minmax(250px, .82fr) minmax(260px, 1.18fr);
+  gap:var(--gestao-gap);
+  min-height:0;
+}
+.dash-card{padding:clamp(10px,.75vw,14px);gap:clamp(7px,.55vw,10px);}
+.dash-card.current,.dash-card.temperature,.dash-card.logs{min-height:250px;}
+.dash-card.joints{min-height:260px;}
+.dash-head h3{font-size:clamp(13px,.9vw,16px);}
+.notice-list{grid-template-columns:1fr;gap:6px;}
+.notice-list div{min-height:clamp(30px,3.1vh,42px);padding:6px 8px;}
+.event-feed{min-height:0;flex:1;}
+.event{padding:7px 9px;}
+.filter-row{gap:5px;}
+.chip{padding:5px 8px;font-size:clamp(9px,.62vw,10px);}
+
+/* cards superiores em modo recolhido: resumo cresce para ocupar o card */
+.dash-card.summary-mode .mini-health-row{
+  flex:1;
+  display:grid;
+  grid-template-columns:minmax(120px,34%) 1fr;
+  align-items:center;
+  gap:clamp(14px,1.4vw,24px);
+  min-height:0;
+}
+.dash-card.summary-mode .mini-health-row .health-gauge.small{
+  width:clamp(120px,9vw,170px);
+  height:clamp(78px,6vw,112px);
+  justify-self:center;
+}
+.dash-card.summary-mode .mini-health-row strong{font-size:clamp(20px,1.6vw,30px);line-height:1.05;}
+.dash-card.summary-mode .notice-list{grid-template-rows:repeat(3,minmax(34px,1fr));}
+.dash-card.summary-mode .expand-line{margin-top:0;}
+
+/* Saúde por junta — visão geral densa e visão detalhada alternável */
+.dash-card.joints{display:flex;flex-direction:column;}
+.joint-grid{
+  grid-template-columns:repeat(6,minmax(118px,1fr))!important;
+  grid-template-rows:1fr!important;
+  gap:var(--gestao-gap)!important;
+  flex:1;
+  min-height:0;
+}
+.joint-card-v2{
+  background:var(--bg);
+  border:1px solid var(--bd);
+  border-radius:var(--r8);
+  padding:clamp(8px,.65vw,12px);
+  display:flex;
+  flex-direction:column;
+  min-width:0;
+  min-height:0;
+  overflow:hidden;
+}
+.joint-card-v2 .joint-general{
+  flex:1;
+  min-height:0;
+  display:flex;
+  flex-direction:column;
+  align-items:center;
+  justify-content:center;
+  gap:clamp(6px,.5vw,10px);
+  text-align:center;
+}
+.joint-name{align-self:stretch;display:flex;justify-content:space-between;align-items:center;gap:6px;}
+.joint-name span{font-size:clamp(15px,1.25vw,22px);font-weight:900;color:var(--nv);}
+.joint-name em{font-style:normal;font-size:clamp(9px,.6vw,10px);font-weight:900;color:var(--t3);text-transform:uppercase;}
+.joint-main-gauge{width:clamp(88px,6.5vw,140px);height:clamp(56px,4.3vw,88px);}
+.joint-card-v2 .joint-status{font-size:clamp(11px,.75vw,13px);font-weight:900;color:var(--ok);}
+.joint-card-v2 .joint-toggle{margin-top:8px;border-top:1px solid var(--bd);padding-top:7px;}
+.joint-detail-grid{
+  display:none;
+  flex:1;
+  min-height:0;
+  grid-template-rows:minmax(0,1fr) auto;
+  gap:8px;
+}
+.joint-card-v2.detailed .joint-general{display:none;}
+.joint-card-v2.detailed .joint-detail-grid{display:grid;}
+.joint-metrics{display:grid;grid-template-columns:1fr 1fr;gap:8px;min-height:0;}
+.joint-metric{
+  background:#fff;
+  border:1px solid var(--bd);
+  border-radius:var(--r6);
+  padding:8px;
+  display:flex;
+  flex-direction:column;
+  align-items:center;
+  justify-content:center;
+  gap:5px;
+  min-width:0;
+}
+.joint-metric label{font-size:clamp(9px,.62vw,10px);font-weight:900;color:var(--t3);text-transform:uppercase;letter-spacing:.05em;}
+.joint-mini-gauge{width:clamp(56px,4.1vw,86px);height:clamp(36px,2.7vw,56px);}
+.joint-metric strong{font-size:clamp(11px,.74vw,13px);font-weight:900;color:var(--nv);}
+.joint-mini-logs{display:grid;grid-template-columns:repeat(3,1fr);gap:5px;}
+.joint-mini-logs .log-pill{padding:5px 6px;grid-template-columns:8px 1fr auto;font-size:clamp(8px,.55vw,10px);}
+
+@media(max-width:1600px){
+  .cell-grid{grid-template-rows:repeat(2,minmax(220px,1fr));}
+  .cell-log-strip{grid-template-columns:1fr;}
+  .cell-card.live{padding-bottom:54px!important;}
+  .detail-dashboard{grid-template-rows:minmax(235px,.8fr) minmax(250px,1.2fr);}
+  .joint-grid{grid-template-columns:repeat(3,minmax(0,1fr))!important;grid-template-rows:repeat(2,minmax(150px,1fr))!important;}
+}
+@media(max-width:1200px){
+  .cell-grid{grid-template-columns:repeat(2,minmax(250px,1fr));grid-template-rows:repeat(3,minmax(230px,1fr));}
+  .detail-dashboard{grid-template-columns:1fr 1fr;grid-template-rows:auto auto minmax(300px,1fr);overflow:auto;}
+  .dash-card.logs,.dash-card.joints{grid-column:1 / 3;}
+  .joint-grid{grid-template-columns:repeat(2,minmax(0,1fr))!important;grid-template-rows:repeat(3,minmax(150px,1fr))!important;}
+}
+@media(max-width:900px){
+  .mgmt-lead{max-width:100%;}
+  .cell-grid{grid-template-columns:1fr;grid-auto-rows:minmax(240px,auto);grid-template-rows:none;}
+  .detail-dashboard{grid-template-columns:1fr;grid-template-rows:auto;overflow:auto;}
+  .dash-card.logs,.dash-card.joints{grid-column:auto;}
+  .joint-grid{grid-template-columns:1fr!important;grid-template-rows:none!important;}
+}
+body.gestao-small-h .mgmt-top.card{padding-top:8px;padding-bottom:8px;}
+body.gestao-small-h .mgmt-warning{padding-top:6px!important;padding-bottom:6px!important;}
+body.gestao-small-h .cell-grid{grid-template-rows:repeat(2,minmax(214px,1fr));}
+body.gestao-small-h .cell-card{gap:7px;}
+body.gestao-small-h .cell-card.live{padding-bottom:50px!important;}
+body.gestao-small-h .detail-head.card{padding:8px 12px;}
+body.gestao-small-h .detail-dashboard{grid-template-rows:minmax(220px,.75fr) minmax(245px,1.25fr);}
+body.gestao-detail-open .cell-grid{overflow:hidden;}
+
+
+
+/* V17.7 — correção crítica: instrumentos vetoriais, modos globais e menos zona morta sem esticar componentes */
+.health-gauge{
+  position:relative;
+  width:clamp(92px,7vw,132px)!important;
+  height:auto!important;
+  aspect-ratio:2 / 1;
+  overflow:visible!important;
+  display:block;
+  flex-shrink:0;
+}
+.health-gauge.small{width:clamp(102px,8.4vw,152px)!important;height:auto!important;}
+.health-gauge.micro{width:clamp(62px,4.6vw,86px)!important;height:auto!important;}
+.health-gauge.joint-main-gauge{width:clamp(110px,7.4vw,150px)!important;height:auto!important;}
+.health-svg{width:100%;height:100%;display:block;overflow:visible;}
+.health-svg .seg{fill:none;stroke-width:18;stroke-linecap:butt;vector-effect:non-scaling-stroke;}
+.health-svg .seg.under{stroke:#9BB8C8;}
+.health-svg .seg.ok{stroke:var(--ok);}
+.health-svg .seg.warn{stroke:var(--wn);}
+.health-svg .seg.crit{stroke:var(--er);}
+.health-svg .hub{fill:var(--sf);stroke:var(--bd);stroke-width:1.4;}
+.health-svg .needle{stroke:var(--nv);stroke-width:4;stroke-linecap:round;transform-origin:100px 100px;transition:transform .18s ease;}
+.health-svg .pivot{fill:var(--nv);}
+.health-gauge[data-level="1"] .needle{transform:rotate(-67deg);}
+.health-gauge[data-level="2"] .needle{transform:rotate(-22deg);}
+.health-gauge[data-level="3"] .needle{transform:rotate(22deg);}
+.health-gauge[data-level="4"] .needle{transform:rotate(67deg);}
+.health-arc,.health-cover,.health-needle{display:none!important;}
+
+.detail-dashboard{
+  grid-template-columns:minmax(0,1fr) minmax(0,1fr) minmax(340px,1.05fr)!important;
+  grid-template-rows:minmax(250px,.86fr) minmax(330px,1.14fr)!important;
+  gap:12px!important;
+}
+.dash-card.current,.dash-card.temperature{justify-content:space-between;}
+.mini-health-row{display:grid!important;grid-template-columns:auto 1fr;align-items:center;gap:18px;min-height:110px;}
+.mini-health-row strong{font-size:clamp(20px,1.45vw,28px)!important;line-height:1.05;color:var(--nv);}
+.collapse-area{border-top:1px solid var(--bd);padding-top:10px;margin-top:2px;}
+.health-by-joint-grid{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:8px;}
+.health-joint-tile{background:var(--bg);border:1px solid var(--bd);border-radius:var(--r6);padding:8px;display:grid;grid-template-rows:auto 1fr auto;align-items:center;justify-items:center;min-height:98px;}
+.health-joint-tile span{font-size:clamp(10px,.62vw,11px);font-weight:900;color:var(--t2);}
+.health-joint-tile strong{font-size:clamp(9px,.58vw,10px);font-weight:900;color:var(--wn);white-space:nowrap;}
+.expand-line{margin-top:auto!important;}
+
+.joint-panel-head{align-items:center!important;}
+.view-tabs{display:inline-flex;align-items:center;gap:4px;padding:3px;border:1px solid var(--bd);border-radius:999px;background:var(--bg);}
+.view-tab{border:0;border-radius:999px;background:transparent;color:var(--t2);font-size:clamp(10px,.64vw,12px);font-weight:900;padding:7px 13px;cursor:pointer;letter-spacing:.02em;}
+.view-tab.active{background:var(--ac);color:white;box-shadow:0 3px 10px rgba(0,169,206,.22);}
+.joint-mode{display:none;min-height:0;flex:1;}
+.joint-mode.active{display:flex;}
+.joint-grid-v3{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:10px;min-height:0;flex:1;width:100%;}
+.joint-card-v3{background:var(--bg);border:1px solid var(--bd);border-radius:var(--r8);padding:12px;display:grid;grid-template-rows:auto 1fr auto auto;align-items:center;justify-items:center;gap:9px;min-height:0;overflow:hidden;}
+.joint-card-head{align-self:stretch;display:flex;justify-content:space-between;align-items:center;gap:8px;}
+.joint-card-head strong{font-size:clamp(19px,1.3vw,26px);font-weight:900;color:var(--nv);}
+.joint-card-head span{font-size:clamp(9px,.6vw,10px);font-weight:900;color:var(--t3);text-transform:uppercase;letter-spacing:.06em;}
+.joint-card-v3 .joint-status{font-size:clamp(11px,.74vw,13px);font-weight:900;color:var(--wn);text-align:center;}
+.joint-log-strip{align-self:stretch;display:grid;grid-template-columns:1fr;gap:5px;margin-top:auto;}
+.joint-log-strip .log-pill{padding:5px 7px;font-size:clamp(8px,.55vw,10px);grid-template-columns:8px 1fr auto;}
+
+.joint-mode-telemetry{display:none;grid-template-columns:1fr 1fr;gap:12px;width:100%;}
+.joint-mode-telemetry.active{display:grid;}
+.telemetry-panel{background:var(--bg);border:1px solid var(--bd);border-radius:var(--r8);padding:12px;display:flex;flex-direction:column;gap:10px;min-width:0;}
+.telemetry-panel-head{display:flex;justify-content:space-between;align-items:flex-start;gap:10px;border-bottom:1px solid var(--bd);padding-bottom:8px;}
+.telemetry-panel-head h4{font-size:clamp(14px,.9vw,18px);font-weight:900;color:var(--nv);display:flex;gap:8px;align-items:center;}
+.telemetry-panel-head span{font-size:clamp(9px,.58vw,10px);font-weight:900;color:var(--t3);text-transform:uppercase;letter-spacing:.06em;text-align:right;}
+.telemetry-list{display:grid;grid-template-columns:1fr;gap:8px;flex:1;align-content:stretch;}
+.telemetry-row{display:grid;grid-template-columns:38px 1fr 72px;align-items:center;gap:10px;background:var(--sf);border:1px solid var(--bd);border-radius:var(--r6);padding:8px 10px;min-height:0;}
+.telemetry-row span{font-size:clamp(13px,.85vw,16px);font-weight:900;color:var(--nv);}
+.telemetry-row strong{font-size:clamp(12px,.8vw,15px);font-weight:900;color:var(--nv);text-align:right;}
+.raw-track{height:10px;border-radius:999px;background:#DDE7EE;overflow:hidden;box-shadow:inset 0 1px 2px rgba(0,0,0,.06);}
+.raw-fill{height:100%;width:0%;border-radius:999px;background:var(--ac);transition:width .18s ease, background .18s ease;}
+.current-fill{background:var(--ac);}
+.temp-fill{background:var(--wn);}
+
+.cell-card{min-height:258px!important;}
+.cell-expand{position:relative;z-index:2;min-height:42px;}
+.cell-meta{margin-bottom:0;}
+
+@media(max-width:1500px){
+  .joint-grid-v3{grid-template-columns:repeat(3,minmax(0,1fr));grid-template-rows:repeat(2,minmax(160px,1fr));}
+  .health-by-joint-grid{grid-template-columns:repeat(3,minmax(0,1fr));}
+  .detail-dashboard{grid-template-columns:1fr 1fr!important;grid-template-rows:auto auto minmax(340px,1fr)!important;overflow:auto;}
+  .dash-card.logs,.dash-card.joints{grid-column:1 / 3;}
+}
+@media(max-width:950px){
+  .detail-dashboard{grid-template-columns:1fr!important;grid-template-rows:auto!important;}
+  .dash-card.logs,.dash-card.joints{grid-column:auto;}
+  .joint-grid-v3{grid-template-columns:repeat(2,minmax(0,1fr));}
+  .joint-mode-telemetry.active{grid-template-columns:1fr;}
+  .health-by-joint-grid{grid-template-columns:repeat(2,minmax(0,1fr));}
+}
+
+
+
+/* === V17.7 — correção de modelo visual: saúde compacta, SVG sem elipse e leitura sem zoom === */
+.health-svg .hub{fill:var(--sf);stroke:var(--bd);stroke-width:1.25;}
+.health-svg .pivot{fill:var(--nv);}
+.health-svg .seg{stroke-width:17;}
+.health-gauge{aspect-ratio:200 / 120!important;}
+.health-gauge.micro{display:none!important;}
+
+.health-legend{
+  display:flex;
+  flex-wrap:wrap;
+  gap:8px 14px;
+  margin-top:8px;
+  color:var(--t2);
+  font-size:clamp(10px,.66vw,12px);
+  font-weight:800;
+}
+.health-legend span{display:inline-flex;align-items:center;gap:6px;white-space:nowrap;}
+.status-dot{width:10px;height:10px;border-radius:50%;display:inline-block;flex:0 0 10px;background:var(--t3);box-shadow:0 0 0 2px rgba(255,255,255,.7);}
+.status-dot.under{background:#9BB8C8;}.status-dot.ok{background:var(--ok);}.status-dot.warn{background:var(--wn);}.status-dot.crit{background:var(--er);}
+
+.detail-head.card{display:flex;align-items:flex-start;justify-content:space-between;gap:18px;padding:10px 14px;}
+.detail-head .cttl{margin-bottom:4px;}
+.detail-head p{max-width:920px;line-height:1.35;}
+
+.detail-dashboard{
+  grid-template-columns:minmax(0,1fr) minmax(0,1fr) minmax(360px,1.05fr)!important;
+  grid-template-rows:minmax(250px,.82fr) minmax(315px,1.18fr)!important;
+  gap:10px!important;
+}
+.dash-card{padding:12px!important;gap:8px!important;}
+.dash-card.current,.dash-card.temperature{min-height:0!important;overflow:hidden;}
+.mini-health-row{grid-template-columns:minmax(104px,28%) 1fr!important;gap:14px!important;min-height:74px!important;}
+.mini-health-row strong{font-size:clamp(18px,1.35vw,25px)!important;}
+.notice-list{gap:6px!important;}
+.notice-list div{min-height:30px!important;padding:6px 8px!important;}
+.expand-line{font-size:clamp(10px,.65vw,12px)!important;padding:2px 0!important;margin-top:0!important;text-transform:none;}
+.collapse-area{padding-top:6px!important;margin-top:2px!important;}
+
+.health-status-list{
+  display:grid;
+  grid-template-columns:repeat(3,minmax(0,1fr));
+  gap:6px;
+}
+.status-joint-row{
+  min-height:31px;
+  display:grid;
+  grid-template-columns:30px 14px minmax(0,1fr);
+  align-items:center;
+  gap:6px;
+  background:var(--bg);
+  border:1px solid var(--bd);
+  border-radius:var(--r6);
+  padding:6px 8px;
+}
+.status-joint-row span{font-size:clamp(11px,.72vw,13px);font-weight:900;color:var(--nv);}
+.status-joint-row strong{font-size:clamp(10px,.65vw,12px);font-weight:900;color:var(--wn);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+
+.log-pill,.joint-log-strip .log-pill{
+  display:grid!important;
+  grid-template-columns:12px minmax(0,1fr) minmax(20px,auto)!important;
+  justify-items:stretch!important;
+  align-items:center!important;
+  text-align:left!important;
+  gap:7px!important;
+}
+.log-pill span,.joint-log-strip .log-pill span{
+  text-align:left!important;
+  justify-self:start!important;
+  overflow:visible!important;
+  text-overflow:clip!important;
+  white-space:nowrap!important;
+}
+.log-pill strong,.joint-log-strip .log-pill strong{text-align:right!important;justify-self:end!important;}
+.joint-log-strip{width:100%;gap:6px!important;}
+.joint-log-strip .log-pill{min-height:28px;padding:5px 8px!important;font-size:clamp(9px,.58vw,11px)!important;}
+
+.joint-grid-v3{grid-template-columns:repeat(6,minmax(0,1fr))!important;gap:10px!important;}
+.joint-card-v3{
+  padding:10px!important;
+  grid-template-rows:auto minmax(72px,1fr) auto auto!important;
+  min-height:250px;
+}
+.joint-card-head{width:100%;}
+.joint-card-head strong{font-size:clamp(20px,1.25vw,26px)!important;}
+.joint-card-v3 .joint-status{margin-top:-2px;}
+.joint-card-v3 .health-gauge.joint-main-gauge{width:clamp(106px,6.7vw,142px)!important;align-self:center;}
+
+.joint-mode-telemetry.active{grid-template-columns:1fr 1fr!important;gap:12px!important;}
+.telemetry-panel{padding:12px!important;}
+.telemetry-list{gap:7px!important;}
+.telemetry-row{min-height:38px!important;}
+
+@media(max-height:920px){
+  .detail-head.card{padding:8px 12px;}
+  .detail-head p{font-size:clamp(10px,.62vw,11px);}
+  .health-legend{margin-top:4px;gap:5px 10px;}
+  .detail-dashboard{grid-template-rows:minmax(218px,.78fr) minmax(280px,1.22fr)!important;gap:8px!important;}
+  .dash-card{padding:10px!important;}
+  .mini-health-row{min-height:62px!important;grid-template-columns:92px 1fr!important;}
+  .health-gauge.small{width:clamp(86px,5.2vw,112px)!important;}
+  .notice-list div{min-height:27px!important;padding:5px 7px!important;}
+  .status-joint-row{min-height:28px;padding:5px 7px;}
+  .joint-card-v3{min-height:220px;grid-template-rows:auto minmax(58px,1fr) auto auto!important;}
+  .joint-card-v3 .health-gauge.joint-main-gauge{width:clamp(88px,5.5vw,124px)!important;}
+}
+@media(max-width:1500px){
+  .detail-dashboard{grid-template-columns:1fr 1fr!important;grid-template-rows:auto auto minmax(330px,1fr)!important;overflow:auto!important;}
+  .dash-card.logs,.dash-card.joints{grid-column:1 / 3;}
+  .joint-grid-v3{grid-template-columns:repeat(3,minmax(0,1fr))!important;}
+  .health-status-list{grid-template-columns:repeat(2,minmax(0,1fr));}
+}
+@media(max-width:950px){
+  .detail-dashboard{grid-template-columns:1fr!important;grid-template-rows:auto!important;overflow:auto!important;}
+  .dash-card.logs,.dash-card.joints{grid-column:auto;}
+  .joint-grid-v3{grid-template-columns:repeat(2,minmax(0,1fr))!important;}
+  .joint-mode-telemetry.active{grid-template-columns:1fr!important;}
+  .health-status-list{grid-template-columns:1fr;}
+}
+
 </style>
 </head>
 <body>
@@ -221,7 +695,7 @@ canvas{width:100%;height:100%;display:block;background:#fff;position:relative;z-
 </div>
 
 <div class="hmi">
-  <div class="demo-bar"><i class="fa-solid fa-eye"></i> Modo local — frontend rebrand em validação. Backend Flask/Socket.IO preservado para reconexão.</div>
+  <div class="demo-bar"><i class="fa-solid fa-eye"></i> Modo local — frontend gestão refinada em validação. Backend Flask/Socket.IO preservado para reconexão.</div>
   <header class="hd">
     <div class="hd-logo" aria-label="Payback Engenharia">
       <svg id="Horizontal" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 2788.42 1057.54">
@@ -234,7 +708,299 @@ canvas{width:100%;height:100%;display:block;background:#fff;position:relative;z-
       .cls-2 {
         fill: #00aed6;
       }
-    </style>
+    
+
+/* === V17.7 — Gestão densa sem zona morta (frontend-only) === */
+:root{
+  --gestao-gap: clamp(8px, .75vw, 14px);
+  --gestao-pad: clamp(10px, .8vw, 16px);
+}
+#page-gestao.page{min-height:0;overflow:hidden;}
+#page-gestao .card{min-height:0;}
+.cell-mgmt{gap:var(--gestao-gap);overflow:hidden;}
+.mgmt-top.card{padding:clamp(10px,.8vw,14px) clamp(12px,1vw,18px);}
+.mgmt-lead{max-width:min(980px,62vw);font-size:clamp(11px,.72vw,13px);}
+.mgmt-kpis>div{padding:clamp(7px,.6vw,10px) clamp(9px,.7vw,12px);min-width:clamp(96px,7.4vw,132px);}
+.mgmt-kpis strong{font-size:clamp(16px,1.25vw,22px);}
+.mgmt-warning{padding:9px 14px!important;}
+
+.cell-grid{
+  grid-template-columns:repeat(3,minmax(260px,1fr));
+  grid-template-rows:repeat(2,minmax(230px,1fr));
+  gap:var(--gestao-gap);
+  overflow:auto;
+  padding:1px 4px 4px 1px;
+  scrollbar-gutter:stable;
+}
+.cell-card{padding:var(--gestao-pad);gap:clamp(8px,.65vw,12px);}
+.cell-card.live{padding-bottom:clamp(54px,4.2vh,66px)!important;min-height:230px;}
+.cell-card.live .cell-expand{
+  position:absolute;
+  left:var(--gestao-pad);
+  right:var(--gestao-pad);
+  bottom:var(--gestao-pad);
+  width:auto;
+  margin:0;
+  min-height:38px;
+  z-index:3;
+}
+.cell-card h3{font-size:clamp(15px,1.05vw,20px);line-height:1.05;}
+.cell-card-head{gap:8px;}
+.cell-kind{font-size:clamp(9px,.62vw,10px);}
+.cell-health-row{grid-template-columns:clamp(82px,6vw,108px) 1fr;gap:clamp(8px,.7vw,14px);}
+.health-text strong{font-size:clamp(15px,1vw,20px);}
+.health-text span{font-size:clamp(9px,.65vw,11px);}
+.cell-log-strip{grid-template-columns:repeat(3,minmax(0,1fr));gap:6px;}
+.log-pill{padding:6px 8px;font-size:clamp(9px,.62vw,11px);min-width:0;}
+.log-pill span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.cell-meta{grid-template-columns:repeat(2,minmax(0,1fr));gap:6px;margin-top:0;}
+.cell-meta>div{padding:6px 8px;min-width:0;}
+.cell-meta strong{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.cell-card.ghost{min-height:230px;}
+
+/* velocímetro: sem folga nos 180° úteis */
+.health-gauge{width:clamp(82px,5.9vw,108px);height:clamp(50px,3.65vw,68px);}
+.health-gauge.small{width:clamp(78px,5.2vw,96px);height:clamp(48px,3.1vw,62px);}
+.health-arc{
+  width:100%;height:calc(clamp(82px,5.9vw,108px));
+  background:conic-gradient(from 270deg,
+    #9BB8C8 0deg 45deg,
+    var(--ok) 45deg 90deg,
+    var(--wn) 90deg 135deg,
+    var(--er) 135deg 180deg,
+    transparent 180deg 360deg);
+}
+.health-gauge.small .health-arc{width:100%;height:clamp(78px,5.2vw,96px);}
+.health-cover{left:14%;top:20%;width:72%;height:72%;}
+.health-gauge.small .health-cover{left:14%;top:20%;width:72%;height:72%;}
+.health-needle{left:49%;top:62%;height:58%;}
+.health-gauge.small .health-needle{left:49%;top:62%;height:56%;}
+
+.cell-detail{inset:8px!important;gap:var(--gestao-gap);overflow:hidden!important;background:var(--bg);}
+.detail-head.card{padding:10px 14px;}
+.detail-head p{font-size:clamp(10px,.68vw,12px);max-width:80vw;}
+.detail-dashboard{
+  grid-template-columns:1fr 1fr 1.05fr;
+  grid-template-rows:minmax(250px, .82fr) minmax(260px, 1.18fr);
+  gap:var(--gestao-gap);
+  min-height:0;
+}
+.dash-card{padding:clamp(10px,.75vw,14px);gap:clamp(7px,.55vw,10px);}
+.dash-card.current,.dash-card.temperature,.dash-card.logs{min-height:250px;}
+.dash-card.joints{min-height:260px;}
+.dash-head h3{font-size:clamp(13px,.9vw,16px);}
+.notice-list{grid-template-columns:1fr;gap:6px;}
+.notice-list div{min-height:clamp(30px,3.1vh,42px);padding:6px 8px;}
+.event-feed{min-height:0;flex:1;}
+.event{padding:7px 9px;}
+.filter-row{gap:5px;}
+.chip{padding:5px 8px;font-size:clamp(9px,.62vw,10px);}
+
+/* cards superiores em modo recolhido: resumo cresce para ocupar o card */
+.dash-card.summary-mode .mini-health-row{
+  flex:1;
+  display:grid;
+  grid-template-columns:minmax(120px,34%) 1fr;
+  align-items:center;
+  gap:clamp(14px,1.4vw,24px);
+  min-height:0;
+}
+.dash-card.summary-mode .mini-health-row .health-gauge.small{
+  width:clamp(120px,9vw,170px);
+  height:clamp(78px,6vw,112px);
+  justify-self:center;
+}
+.dash-card.summary-mode .mini-health-row strong{font-size:clamp(20px,1.6vw,30px);line-height:1.05;}
+.dash-card.summary-mode .notice-list{grid-template-rows:repeat(3,minmax(34px,1fr));}
+.dash-card.summary-mode .expand-line{margin-top:0;}
+
+/* Saúde por junta — visão geral densa e visão detalhada alternável */
+.dash-card.joints{display:flex;flex-direction:column;}
+.joint-grid{
+  grid-template-columns:repeat(6,minmax(118px,1fr))!important;
+  grid-template-rows:1fr!important;
+  gap:var(--gestao-gap)!important;
+  flex:1;
+  min-height:0;
+}
+.joint-card-v2{
+  background:var(--bg);
+  border:1px solid var(--bd);
+  border-radius:var(--r8);
+  padding:clamp(8px,.65vw,12px);
+  display:flex;
+  flex-direction:column;
+  min-width:0;
+  min-height:0;
+  overflow:hidden;
+}
+.joint-card-v2 .joint-general{
+  flex:1;
+  min-height:0;
+  display:flex;
+  flex-direction:column;
+  align-items:center;
+  justify-content:center;
+  gap:clamp(6px,.5vw,10px);
+  text-align:center;
+}
+.joint-name{align-self:stretch;display:flex;justify-content:space-between;align-items:center;gap:6px;}
+.joint-name span{font-size:clamp(15px,1.25vw,22px);font-weight:900;color:var(--nv);}
+.joint-name em{font-style:normal;font-size:clamp(9px,.6vw,10px);font-weight:900;color:var(--t3);text-transform:uppercase;}
+.joint-main-gauge{width:clamp(88px,6.5vw,140px);height:clamp(56px,4.3vw,88px);}
+.joint-card-v2 .joint-status{font-size:clamp(11px,.75vw,13px);font-weight:900;color:var(--ok);}
+.joint-card-v2 .joint-toggle{margin-top:8px;border-top:1px solid var(--bd);padding-top:7px;}
+.joint-detail-grid{
+  display:none;
+  flex:1;
+  min-height:0;
+  grid-template-rows:minmax(0,1fr) auto;
+  gap:8px;
+}
+.joint-card-v2.detailed .joint-general{display:none;}
+.joint-card-v2.detailed .joint-detail-grid{display:grid;}
+.joint-metrics{display:grid;grid-template-columns:1fr 1fr;gap:8px;min-height:0;}
+.joint-metric{
+  background:#fff;
+  border:1px solid var(--bd);
+  border-radius:var(--r6);
+  padding:8px;
+  display:flex;
+  flex-direction:column;
+  align-items:center;
+  justify-content:center;
+  gap:5px;
+  min-width:0;
+}
+.joint-metric label{font-size:clamp(9px,.62vw,10px);font-weight:900;color:var(--t3);text-transform:uppercase;letter-spacing:.05em;}
+.joint-mini-gauge{width:clamp(56px,4.1vw,86px);height:clamp(36px,2.7vw,56px);}
+.joint-metric strong{font-size:clamp(11px,.74vw,13px);font-weight:900;color:var(--nv);}
+.joint-mini-logs{display:grid;grid-template-columns:repeat(3,1fr);gap:5px;}
+.joint-mini-logs .log-pill{padding:5px 6px;grid-template-columns:8px 1fr auto;font-size:clamp(8px,.55vw,10px);}
+
+@media(max-width:1600px){
+  .cell-grid{grid-template-rows:repeat(2,minmax(220px,1fr));}
+  .cell-log-strip{grid-template-columns:1fr;}
+  .cell-card.live{padding-bottom:54px!important;}
+  .detail-dashboard{grid-template-rows:minmax(235px,.8fr) minmax(250px,1.2fr);}
+  .joint-grid{grid-template-columns:repeat(3,minmax(0,1fr))!important;grid-template-rows:repeat(2,minmax(150px,1fr))!important;}
+}
+@media(max-width:1200px){
+  .cell-grid{grid-template-columns:repeat(2,minmax(250px,1fr));grid-template-rows:repeat(3,minmax(230px,1fr));}
+  .detail-dashboard{grid-template-columns:1fr 1fr;grid-template-rows:auto auto minmax(300px,1fr);overflow:auto;}
+  .dash-card.logs,.dash-card.joints{grid-column:1 / 3;}
+  .joint-grid{grid-template-columns:repeat(2,minmax(0,1fr))!important;grid-template-rows:repeat(3,minmax(150px,1fr))!important;}
+}
+@media(max-width:900px){
+  .mgmt-lead{max-width:100%;}
+  .cell-grid{grid-template-columns:1fr;grid-auto-rows:minmax(240px,auto);grid-template-rows:none;}
+  .detail-dashboard{grid-template-columns:1fr;grid-template-rows:auto;overflow:auto;}
+  .dash-card.logs,.dash-card.joints{grid-column:auto;}
+  .joint-grid{grid-template-columns:1fr!important;grid-template-rows:none!important;}
+}
+body.gestao-small-h .mgmt-top.card{padding-top:8px;padding-bottom:8px;}
+body.gestao-small-h .mgmt-warning{padding-top:6px!important;padding-bottom:6px!important;}
+body.gestao-small-h .cell-grid{grid-template-rows:repeat(2,minmax(214px,1fr));}
+body.gestao-small-h .cell-card{gap:7px;}
+body.gestao-small-h .cell-card.live{padding-bottom:50px!important;}
+body.gestao-small-h .detail-head.card{padding:8px 12px;}
+body.gestao-small-h .detail-dashboard{grid-template-rows:minmax(220px,.75fr) minmax(245px,1.25fr);}
+body.gestao-detail-open .cell-grid{overflow:hidden;}
+
+
+
+/* V17.7 — correção crítica: instrumentos vetoriais, modos globais e menos zona morta sem esticar componentes */
+.health-gauge{
+  position:relative;
+  width:clamp(92px,7vw,132px)!important;
+  height:auto!important;
+  aspect-ratio:2 / 1;
+  overflow:visible!important;
+  display:block;
+  flex-shrink:0;
+}
+.health-gauge.small{width:clamp(102px,8.4vw,152px)!important;height:auto!important;}
+.health-gauge.micro{width:clamp(62px,4.6vw,86px)!important;height:auto!important;}
+.health-gauge.joint-main-gauge{width:clamp(110px,7.4vw,150px)!important;height:auto!important;}
+.health-svg{width:100%;height:100%;display:block;overflow:visible;}
+.health-svg .seg{fill:none;stroke-width:18;stroke-linecap:butt;vector-effect:non-scaling-stroke;}
+.health-svg .seg.under{stroke:#9BB8C8;}
+.health-svg .seg.ok{stroke:var(--ok);}
+.health-svg .seg.warn{stroke:var(--wn);}
+.health-svg .seg.crit{stroke:var(--er);}
+.health-svg .hub{fill:var(--sf);stroke:var(--bd);stroke-width:1.4;}
+.health-svg .needle{stroke:var(--nv);stroke-width:4;stroke-linecap:round;transform-origin:100px 100px;transition:transform .18s ease;}
+.health-svg .pivot{fill:var(--nv);}
+.health-gauge[data-level="1"] .needle{transform:rotate(-67deg);}
+.health-gauge[data-level="2"] .needle{transform:rotate(-22deg);}
+.health-gauge[data-level="3"] .needle{transform:rotate(22deg);}
+.health-gauge[data-level="4"] .needle{transform:rotate(67deg);}
+.health-arc,.health-cover,.health-needle{display:none!important;}
+
+.detail-dashboard{
+  grid-template-columns:minmax(0,1fr) minmax(0,1fr) minmax(340px,1.05fr)!important;
+  grid-template-rows:minmax(250px,.86fr) minmax(330px,1.14fr)!important;
+  gap:12px!important;
+}
+.dash-card.current,.dash-card.temperature{justify-content:space-between;}
+.mini-health-row{display:grid!important;grid-template-columns:auto 1fr;align-items:center;gap:18px;min-height:110px;}
+.mini-health-row strong{font-size:clamp(20px,1.45vw,28px)!important;line-height:1.05;color:var(--nv);}
+.collapse-area{border-top:1px solid var(--bd);padding-top:10px;margin-top:2px;}
+.health-by-joint-grid{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:8px;}
+.health-joint-tile{background:var(--bg);border:1px solid var(--bd);border-radius:var(--r6);padding:8px;display:grid;grid-template-rows:auto 1fr auto;align-items:center;justify-items:center;min-height:98px;}
+.health-joint-tile span{font-size:clamp(10px,.62vw,11px);font-weight:900;color:var(--t2);}
+.health-joint-tile strong{font-size:clamp(9px,.58vw,10px);font-weight:900;color:var(--wn);white-space:nowrap;}
+.expand-line{margin-top:auto!important;}
+
+.joint-panel-head{align-items:center!important;}
+.view-tabs{display:inline-flex;align-items:center;gap:4px;padding:3px;border:1px solid var(--bd);border-radius:999px;background:var(--bg);}
+.view-tab{border:0;border-radius:999px;background:transparent;color:var(--t2);font-size:clamp(10px,.64vw,12px);font-weight:900;padding:7px 13px;cursor:pointer;letter-spacing:.02em;}
+.view-tab.active{background:var(--ac);color:white;box-shadow:0 3px 10px rgba(0,169,206,.22);}
+.joint-mode{display:none;min-height:0;flex:1;}
+.joint-mode.active{display:flex;}
+.joint-grid-v3{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:10px;min-height:0;flex:1;width:100%;}
+.joint-card-v3{background:var(--bg);border:1px solid var(--bd);border-radius:var(--r8);padding:12px;display:grid;grid-template-rows:auto 1fr auto auto;align-items:center;justify-items:center;gap:9px;min-height:0;overflow:hidden;}
+.joint-card-head{align-self:stretch;display:flex;justify-content:space-between;align-items:center;gap:8px;}
+.joint-card-head strong{font-size:clamp(19px,1.3vw,26px);font-weight:900;color:var(--nv);}
+.joint-card-head span{font-size:clamp(9px,.6vw,10px);font-weight:900;color:var(--t3);text-transform:uppercase;letter-spacing:.06em;}
+.joint-card-v3 .joint-status{font-size:clamp(11px,.74vw,13px);font-weight:900;color:var(--wn);text-align:center;}
+.joint-log-strip{align-self:stretch;display:grid;grid-template-columns:1fr;gap:5px;margin-top:auto;}
+.joint-log-strip .log-pill{padding:5px 7px;font-size:clamp(8px,.55vw,10px);grid-template-columns:8px 1fr auto;}
+
+.joint-mode-telemetry{display:none;grid-template-columns:1fr 1fr;gap:12px;width:100%;}
+.joint-mode-telemetry.active{display:grid;}
+.telemetry-panel{background:var(--bg);border:1px solid var(--bd);border-radius:var(--r8);padding:12px;display:flex;flex-direction:column;gap:10px;min-width:0;}
+.telemetry-panel-head{display:flex;justify-content:space-between;align-items:flex-start;gap:10px;border-bottom:1px solid var(--bd);padding-bottom:8px;}
+.telemetry-panel-head h4{font-size:clamp(14px,.9vw,18px);font-weight:900;color:var(--nv);display:flex;gap:8px;align-items:center;}
+.telemetry-panel-head span{font-size:clamp(9px,.58vw,10px);font-weight:900;color:var(--t3);text-transform:uppercase;letter-spacing:.06em;text-align:right;}
+.telemetry-list{display:grid;grid-template-columns:1fr;gap:8px;flex:1;align-content:stretch;}
+.telemetry-row{display:grid;grid-template-columns:38px 1fr 72px;align-items:center;gap:10px;background:var(--sf);border:1px solid var(--bd);border-radius:var(--r6);padding:8px 10px;min-height:0;}
+.telemetry-row span{font-size:clamp(13px,.85vw,16px);font-weight:900;color:var(--nv);}
+.telemetry-row strong{font-size:clamp(12px,.8vw,15px);font-weight:900;color:var(--nv);text-align:right;}
+.raw-track{height:10px;border-radius:999px;background:#DDE7EE;overflow:hidden;box-shadow:inset 0 1px 2px rgba(0,0,0,.06);}
+.raw-fill{height:100%;width:0%;border-radius:999px;background:var(--ac);transition:width .18s ease, background .18s ease;}
+.current-fill{background:var(--ac);}
+.temp-fill{background:var(--wn);}
+
+.cell-card{min-height:258px!important;}
+.cell-expand{position:relative;z-index:2;min-height:42px;}
+.cell-meta{margin-bottom:0;}
+
+@media(max-width:1500px){
+  .joint-grid-v3{grid-template-columns:repeat(3,minmax(0,1fr));grid-template-rows:repeat(2,minmax(160px,1fr));}
+  .health-by-joint-grid{grid-template-columns:repeat(3,minmax(0,1fr));}
+  .detail-dashboard{grid-template-columns:1fr 1fr!important;grid-template-rows:auto auto minmax(340px,1fr)!important;overflow:auto;}
+  .dash-card.logs,.dash-card.joints{grid-column:1 / 3;}
+}
+@media(max-width:950px){
+  .detail-dashboard{grid-template-columns:1fr!important;grid-template-rows:auto!important;}
+  .dash-card.logs,.dash-card.joints{grid-column:auto;}
+  .joint-grid-v3{grid-template-columns:repeat(2,minmax(0,1fr));}
+  .joint-mode-telemetry.active{grid-template-columns:1fr;}
+  .health-by-joint-grid{grid-template-columns:repeat(2,minmax(0,1fr));}
+}
+
+</style>
   </defs>
   <path class="cls-2" d="M676.74,226.74h-241.35c-54.4,0-98.67,44.26-98.67,98.67v10.95h-9.99c-54.4,0-98.66,44.26-98.66,98.67l-1.49,301.44c0,52.02,42.32,94.34,94.34,94.34h68.32c54.4,0,98.66-44.26,98.66-98.66v-77.51h80.18c54.4,0,98.67-44.26,98.67-98.66v-10.95h9.99c54.4,0,98.66-44.26,98.66-98.67v-120.94c0-54.4-44.26-98.67-98.66-98.67ZM437.69,732.13c0,26.71-21.73,48.45-48.45,48.45h-68.32c-24.33,0-44.12-19.79-44.12-43.98l.98-180.64.51-120.94c0-26.71,21.73-48.45,48.45-48.45h9.99v177.3c0,50.04,40.71,90.74,90.74,90.74h10.21v77.51ZM616.53,555.95c0,26.71-21.74,48.45-48.45,48.45h-80.18v-10.95c0-26.71,21.73-48.45,48.45-48.45h80.18v10.95ZM616.53,494.79h-80.18c-54.4,0-98.66,44.26-98.66,98.67v10.95h-10.21c-22.35,0-40.53-18.18-40.53-40.53v-177.3h181.14c26.71,0,48.45,21.73,48.45,48.45v59.77ZM725.18,446.34c0,26.71-21.73,48.45-48.45,48.45h-9.99v-59.77c0-54.4-44.26-98.67-98.67-98.67h-181.14v-10.95c0-26.71,21.73-48.45,48.45-48.45h241.35c26.71,0,48.45,21.73,48.45,48.45v120.94Z"/>
   <g>
@@ -262,11 +1028,11 @@ canvas{width:100%;height:100%;display:block;background:#fff;position:relative;z-
   <div class="body">
     <nav class="nav">
       <a id="nav-trajetoria" class="active" onclick="mostrarTela('trajetoria')"><i class="fa-solid fa-route"></i> Trajetória</a>
-      <a id="nav-telemetria" onclick="mostrarTela('telemetria')"><i class="fa-solid fa-chart-line"></i> Telemetria</a>
+      <a id="nav-telemetria" onclick="mostrarTela('telemetria')"><i class="fa-solid fa-industry"></i> Gestão</a>
       <a id="nav-parametros" onclick="mostrarTela('parametros')"><i class="fa-solid fa-sliders"></i> Parâmetros</a>
       <a onclick="toast('Log operacional será conectado na etapa de backend')"><i class="fa-solid fa-scroll"></i> Log</a>
       <div class="nav-spacer"></div>
-      <div class="nav-foot">Módulo de solda<br>Versão V17.2 · parâmetros<br>Backend Python/Socket.IO</div>
+      <div class="nav-foot">Módulo de solda<br>Versão V17.3 · gestão frontend<br>Backend Python/Socket.IO</div>
     </nav>
 
     <main class="art">
@@ -323,60 +1089,235 @@ canvas{width:100%;height:100%;display:block;background:#fff;position:relative;z-
       </section>
 
       <section id="page-telemetria" class="page">
-        <div class="telemetry-main">
-          <div id="telemetry-warning" class="telemetry-warning">Telemetria não validada: aguardando dados reais do controlador JAKA.</div>
-          <div class="card">
-            <div class="cttl"><i class="fa-solid fa-heart-pulse"></i> Diagnóstico e manutenção</div>
-            <div class="kpi-container">
-              <div class="kpi-box"><i class="fas fa-clock"></i><div class="kpi-data"><label>Tempo ligado</label><span id="kpi-uptime">00h 00m 00s</span></div></div>
-              <div class="kpi-box emergency"><i class="fas fa-circle-exclamation"></i><div class="kpi-data"><label>Emergências</label><span id="kpi-emergencia">2</span></div></div>
-              <div class="kpi-box"><i class="fas fa-heartbeat" style="color:var(--ok)"></i><div class="kpi-data"><label>Saúde do sistema</label><span id="kpi-saude">100%</span></div></div>
+        <div class="cell-mgmt">
+          <div class="mgmt-top card">
+            <div>
+              <div class="cttl"><i class="fa-solid fa-industry"></i> Gestão de células</div>
+              <p class="mgmt-lead">Visão consolidada das células conectadas ao ecossistema Payback. Esta tela resume saúde operacional, avisos críticos e disponibilidade. Os detalhes técnicos de corrente, temperatura e juntas ficam dentro da expansão da célula.</p>
+            </div>
+            <div class="mgmt-kpis">
+              <div><strong>1</strong><span>célula ativa</span></div>
+              <div><strong>5</strong><span>slots reservados</span></div>
+              <div><strong id="kpi-uptime">00h 00m 00s</strong><span>tempo ligado</span></div>
             </div>
           </div>
-          <div class="charts-row">
-            <div class="card">
-              <div class="cttl"><i class="fa-solid fa-bolt"></i> Corrente por junta</div>
-              <div class="bar-graph-container">
-                <div class="bar-item"><span class="bar-label">J1</span><div class="bar-track"><div id="bar-j1" class="bar-fill"></div></div><span id="bar-v-j1" class="bar-value">0.0 A</span></div>
-                <div class="bar-item"><span class="bar-label">J2</span><div class="bar-track"><div id="bar-j2" class="bar-fill"></div></div><span id="bar-v-j2" class="bar-value">0.0 A</span></div>
-                <div class="bar-item"><span class="bar-label">J3</span><div class="bar-track"><div id="bar-j3" class="bar-fill"></div></div><span id="bar-v-j3" class="bar-value">0.0 A</span></div>
-                <div class="bar-item"><span class="bar-label">J4</span><div class="bar-track"><div id="bar-j4" class="bar-fill"></div></div><span id="bar-v-j4" class="bar-value">0.0 A</span></div>
-                <div class="bar-item"><span class="bar-label">J5</span><div class="bar-track"><div id="bar-j5" class="bar-fill"></div></div><span id="bar-v-j5" class="bar-value">0.0 A</span></div>
-                <div class="bar-item"><span class="bar-label">J6</span><div class="bar-track"><div id="bar-j6" class="bar-fill"></div></div><span id="bar-v-j6" class="bar-value">0.0 A</span></div>
+
+          <div id="telemetry-warning" class="telemetry-warning mgmt-warning">Telemetria não validada: aguardando dados reais do controlador JAKA.</div>
+
+          <div class="cell-grid">
+            <article class="cell-card live" id="cell-card-solda">
+              <div class="cell-card-head">
+                <div>
+                  <span class="cell-kind">Solda robotizada</span>
+                  <h3>Célula principal</h3>
+                </div>
+                <span id="telemetry-state" class="trend-badge attention">Placeholder</span>
               </div>
+
+              <div class="cell-health-row">
+                <div class="health-gauge" data-level="2" id="cell-health-gauge">
+                  <div class="health-arc"></div>
+                  <div class="health-needle"></div>
+                  <div class="health-cover"></div>
+                </div>
+                <div class="health-text">
+                  <label>Status atual</label>
+                  <strong id="cell-actual-status">Aguardando validação</strong>
+                  <span id="telemetry-detail">Aguardando fonte real do robô.</span>
+                </div>
+              </div>
+
+              <div class="cell-log-strip">
+                <div class="log-pill under"><i></i><span>Subutilização</span><strong id="cell-under-count">0</strong></div>
+                <div class="log-pill warn"><i></i><span>Avisos</span><strong id="cell-warn-count">1</strong></div>
+                <div class="log-pill crit"><i></i><span>Críticos</span><strong id="cell-crit-count">0</strong></div>
+              </div>
+
+              <div class="cell-meta">
+                <div><span>Robô</span><strong>JAKA Z5</strong></div>
+                <div><span>Socket.IO</span><strong id="socket-state">Aguardando</strong></div>
+              </div>
+
+              <button class="btn btn-p cell-expand" onclick="abrirDetalheCelula()"><i class="fa-solid fa-up-right-and-down-left-from-center"></i> Expandir célula</button>
+            </article>
+
+            <article class="cell-card ghost"><div class="ghost-meter"></div><h3>Célula 02</h3><p>Célula ainda não cadastrada</p><button class="btn btn-o" disabled>Indisponível</button></article>
+            <article class="cell-card ghost"><div class="ghost-meter"></div><h3>Célula 03</h3><p>Célula ainda não cadastrada</p><button class="btn btn-o" disabled>Indisponível</button></article>
+            <article class="cell-card ghost"><div class="ghost-meter"></div><h3>Célula 04</h3><p>Célula ainda não cadastrada</p><button class="btn btn-o" disabled>Indisponível</button></article>
+            <article class="cell-card ghost"><div class="ghost-meter"></div><h3>Célula 05</h3><p>Célula ainda não cadastrada</p><button class="btn btn-o" disabled>Indisponível</button></article>
+            <article class="cell-card ghost"><div class="ghost-meter"></div><h3>Célula 06</h3><p>Célula ainda não cadastrada</p><button class="btn btn-o" disabled>Indisponível</button></article>
+          </div>
+
+          <div id="cell-detail" class="cell-detail hidden">
+            <div class="detail-head card">
+              <div>
+                <div class="cttl"><i class="fa-solid fa-chart-pie"></i> Dashboard expandido — Célula principal</div>
+                <p>Indicadores técnicos consolidados. O resumo de saúde usa os dados disponíveis de telemetria; quando a fonte não é real, o painel permanece sinalizado como não validado.</p>
+                <div class="health-legend" aria-label="Legenda de saúde">
+                  <span><i class="status-dot under"></i>Subutilizada</span>
+                  <span><i class="status-dot ok"></i>Saudável</span>
+                  <span><i class="status-dot warn"></i>Atenção</span>
+                  <span><i class="status-dot crit"></i>Crítica</span>
+                </div>
+              </div>
+              <button class="btn btn-o" onclick="fecharDetalheCelula()"><i class="fa-solid fa-xmark"></i> Fechar expansão</button>
             </div>
 
-            <div class="card">
-              <div class="cttl"><i class="fa-solid fa-temperature-half"></i> Temperatura das juntas</div>
-              <div class="gauges-container">
-                <div class="gauge-item"><span class="gauge-label">Junta 1</span><div id="g-j1" class="gauge-circle"><span id="g-v-j1" class="gauge-value">25°C</span></div></div>
-                <div class="gauge-item"><span class="gauge-label">Junta 2</span><div id="g-j2" class="gauge-circle"><span id="g-v-j2" class="gauge-value">25°C</span></div></div>
-                <div class="gauge-item"><span class="gauge-label">Junta 3</span><div id="g-j3" class="gauge-circle"><span id="g-v-j3" class="gauge-value">25°C</span></div></div>
-                <div class="gauge-item"><span class="gauge-label">Junta 4</span><div id="g-j4" class="gauge-circle"><span id="g-v-j4" class="gauge-value">25°C</span></div></div>
-                <div class="gauge-item"><span class="gauge-label">Junta 5</span><div id="g-j5" class="gauge-circle"><span id="g-v-j5" class="gauge-value">25°C</span></div></div>
-                <div class="gauge-item"><span class="gauge-label">Junta 6</span><div id="g-j6" class="gauge-circle"><span id="g-v-j6" class="gauge-value">25°C</span></div></div>
-              </div>
+            <div class="detail-dashboard">
+              <section class="dash-card current">
+                <div class="dash-head"><h3><i class="fa-solid fa-bolt"></i> Saúde elétrica</h3><span id="avg-current-label">0.00 A média</span></div>
+                <div class="mini-health-row"><div class="health-gauge small" data-level="2" id="current-health-gauge"><div class="health-arc"></div><div class="health-needle"></div><div class="health-cover"></div></div><strong id="current-health-text">Aguardando dados</strong></div>
+                <div class="notice-list">
+                  <div><span>Picos de corrente</span><strong id="current-peak-count">0</strong></div>
+                  <div><span>Oscilação elevada</span><strong id="current-osc-count">0</strong></div>
+                  <div><span>Corrente acima do nominal</span><strong id="current-high-count">0</strong></div>
+                </div>
+                <button class="expand-line" onclick="alternarPainelDetalhe('current-detail', this)">Expandir detalhes <i class="fa-solid fa-chevron-down"></i></button>
+                <div id="current-detail" class="collapse-area">
+                  <div class="health-status-list compact-health" aria-label="Saúde elétrica por junta">
+                    <div class="status-joint-row"><span>J1</span><i class="status-dot warn"></i><strong id="current-health-j1">Não validada</strong></div>
+                    <div class="status-joint-row"><span>J2</span><i class="status-dot warn"></i><strong id="current-health-j2">Não validada</strong></div>
+                    <div class="status-joint-row"><span>J3</span><i class="status-dot warn"></i><strong id="current-health-j3">Não validada</strong></div>
+                    <div class="status-joint-row"><span>J4</span><i class="status-dot warn"></i><strong id="current-health-j4">Não validada</strong></div>
+                    <div class="status-joint-row"><span>J5</span><i class="status-dot warn"></i><strong id="current-health-j5">Não validada</strong></div>
+                    <div class="status-joint-row"><span>J6</span><i class="status-dot warn"></i><strong id="current-health-j6">Não validada</strong></div>
+                  </div>
+                </div>
+              </section>
+
+              <section class="dash-card temperature">
+                <div class="dash-head"><h3><i class="fa-solid fa-temperature-half"></i> Saúde térmica</h3><span id="avg-temp-label">0.0 °C média</span></div>
+                <div class="mini-health-row"><div class="health-gauge small" data-level="2" id="temp-health-gauge"><div class="health-arc"></div><div class="health-needle"></div><div class="health-cover"></div></div><strong id="temp-health-text">Aguardando dados</strong></div>
+                <div class="notice-list">
+                  <div><span>Aquecimento anormal</span><strong id="temp-high-count">0</strong></div>
+                  <div><span>Risco de desgaste térmico</span><strong id="temp-wear-count">0</strong></div>
+                  <div><span>Estabilidade térmica baixa</span><strong id="temp-var-count">0</strong></div>
+                </div>
+                <button class="expand-line" onclick="alternarPainelDetalhe('temp-detail', this)">Expandir detalhes <i class="fa-solid fa-chevron-down"></i></button>
+                <div id="temp-detail" class="collapse-area">
+                  <div class="health-status-list compact-health" aria-label="Saúde térmica por junta">
+                    <div class="status-joint-row"><span>J1</span><i class="status-dot warn"></i><strong id="temp-health-j1">Não validada</strong></div>
+                    <div class="status-joint-row"><span>J2</span><i class="status-dot warn"></i><strong id="temp-health-j2">Não validada</strong></div>
+                    <div class="status-joint-row"><span>J3</span><i class="status-dot warn"></i><strong id="temp-health-j3">Não validada</strong></div>
+                    <div class="status-joint-row"><span>J4</span><i class="status-dot warn"></i><strong id="temp-health-j4">Não validada</strong></div>
+                    <div class="status-joint-row"><span>J5</span><i class="status-dot warn"></i><strong id="temp-health-j5">Não validada</strong></div>
+                    <div class="status-joint-row"><span>J6</span><i class="status-dot warn"></i><strong id="temp-health-j6">Não validada</strong></div>
+                  </div>
+                </div>
+              </section>
+
+              <section class="dash-card logs">
+                <div class="dash-head"><h3><i class="fa-solid fa-list-check"></i> Eventos técnicos</h3><span>filtros locais</span></div>
+                <div class="filter-row"><button class="chip active">Todos</button><button class="chip">Corrente</button><button class="chip">Temperatura</button><button class="chip">J1</button><button class="chip">J2</button><button class="chip">J3</button><button class="chip">J4</button><button class="chip">J5</button><button class="chip">J6</button></div>
+                <div class="event-feed">
+                  <div class="event warning"><strong>Temperatura J2</strong><span>Tendência de aquecimento acima do restante do conjunto.</span><em>aviso</em></div>
+                  <div class="event info"><strong>Subutilização</strong><span>Ciclo com baixa carga média nas últimas amostras.</span><em>info</em></div>
+                  <div class="event critical"><strong>Telemetria</strong><span>Fonte real ainda não validada. Dados técnicos devem ser tratados como referência visual.</span><em>crítico</em></div>
+                </div>
+              </section>
+
+              <section class="dash-card joints">
+                <div class="dash-head joint-panel-head">
+                  <h3><i class="fa-solid fa-robot"></i> Saúde por junta</h3>
+                  <div class="view-tabs" role="tablist" aria-label="Modo de visualização das juntas">
+                    <button class="view-tab active" data-mode="general" onclick="selecionarModoJuntas('general')">Geral</button>
+                    <button class="view-tab" data-mode="telemetry" onclick="selecionarModoJuntas('telemetry')">Telemetria</button>
+                  </div>
+                </div>
+
+                <div id="joint-mode-general" class="joint-mode joint-mode-general active">
+                  <div class="joint-grid-v3">
+                  <article class="joint-card-v3" data-joint="1">
+                    <div class="joint-card-head"><strong>J1</strong><span id="joint-mode-label-1">Geral</span></div>
+                    <div class="health-gauge joint-main-gauge" data-level="3" id="joint-main-gauge-1"></div>
+                    <strong class="joint-status" id="joint-health-1">Não validada</strong>
+                    <div class="joint-log-strip">
+                      <div class="log-pill under"><i></i><span>Subutilização</span><strong>0</strong></div>
+                      <div class="log-pill warn"><i></i><span>Avisos</span><strong>0</strong></div>
+                      <div class="log-pill crit"><i></i><span>Críticos</span><strong>0</strong></div>
+                    </div>
+                  </article>
+                  <article class="joint-card-v3" data-joint="2">
+                    <div class="joint-card-head"><strong>J2</strong><span id="joint-mode-label-2">Geral</span></div>
+                    <div class="health-gauge joint-main-gauge" data-level="3" id="joint-main-gauge-2"></div>
+                    <strong class="joint-status" id="joint-health-2">Não validada</strong>
+                    <div class="joint-log-strip">
+                      <div class="log-pill under"><i></i><span>Subutilização</span><strong>0</strong></div>
+                      <div class="log-pill warn"><i></i><span>Avisos</span><strong>1</strong></div>
+                      <div class="log-pill crit"><i></i><span>Críticos</span><strong>0</strong></div>
+                    </div>
+                  </article>
+                  <article class="joint-card-v3" data-joint="3">
+                    <div class="joint-card-head"><strong>J3</strong><span id="joint-mode-label-3">Geral</span></div>
+                    <div class="health-gauge joint-main-gauge" data-level="3" id="joint-main-gauge-3"></div>
+                    <strong class="joint-status" id="joint-health-3">Não validada</strong>
+                    <div class="joint-log-strip">
+                      <div class="log-pill under"><i></i><span>Subutilização</span><strong>0</strong></div>
+                      <div class="log-pill warn"><i></i><span>Avisos</span><strong>0</strong></div>
+                      <div class="log-pill crit"><i></i><span>Críticos</span><strong>0</strong></div>
+                    </div>
+                  </article>
+                  <article class="joint-card-v3" data-joint="4">
+                    <div class="joint-card-head"><strong>J4</strong><span id="joint-mode-label-4">Geral</span></div>
+                    <div class="health-gauge joint-main-gauge" data-level="3" id="joint-main-gauge-4"></div>
+                    <strong class="joint-status" id="joint-health-4">Não validada</strong>
+                    <div class="joint-log-strip">
+                      <div class="log-pill under"><i></i><span>Subutilização</span><strong>0</strong></div>
+                      <div class="log-pill warn"><i></i><span>Avisos</span><strong>0</strong></div>
+                      <div class="log-pill crit"><i></i><span>Críticos</span><strong>0</strong></div>
+                    </div>
+                  </article>
+                  <article class="joint-card-v3" data-joint="5">
+                    <div class="joint-card-head"><strong>J5</strong><span id="joint-mode-label-5">Geral</span></div>
+                    <div class="health-gauge joint-main-gauge" data-level="3" id="joint-main-gauge-5"></div>
+                    <strong class="joint-status" id="joint-health-5">Não validada</strong>
+                    <div class="joint-log-strip">
+                      <div class="log-pill under"><i></i><span>Subutilização</span><strong>0</strong></div>
+                      <div class="log-pill warn"><i></i><span>Avisos</span><strong>0</strong></div>
+                      <div class="log-pill crit"><i></i><span>Críticos</span><strong>0</strong></div>
+                    </div>
+                  </article>
+                  <article class="joint-card-v3" data-joint="6">
+                    <div class="joint-card-head"><strong>J6</strong><span id="joint-mode-label-6">Geral</span></div>
+                    <div class="health-gauge joint-main-gauge" data-level="3" id="joint-main-gauge-6"></div>
+                    <strong class="joint-status" id="joint-health-6">Não validada</strong>
+                    <div class="joint-log-strip">
+                      <div class="log-pill under"><i></i><span>Subutilização</span><strong>0</strong></div>
+                      <div class="log-pill warn"><i></i><span>Avisos</span><strong>0</strong></div>
+                      <div class="log-pill crit"><i></i><span>Críticos</span><strong>0</strong></div>
+                    </div>
+                  </article>
+                  </div>
+                </div>
+
+                <div id="joint-mode-telemetry" class="joint-mode joint-mode-telemetry">
+                  <section class="telemetry-panel current-panel">
+                    <div class="telemetry-panel-head"><h4><i class="fa-solid fa-bolt"></i> Corrente por junta</h4><span>valor bruto em tempo real</span></div>
+                    <div class="telemetry-list">
+                    <div class="telemetry-row"><span>J1</span><div class="raw-track"><div id="bar-j1" class="raw-fill current-fill"></div></div><strong id="bar-v-j1">0.0 A</strong></div>
+                    <div class="telemetry-row"><span>J2</span><div class="raw-track"><div id="bar-j2" class="raw-fill current-fill"></div></div><strong id="bar-v-j2">0.0 A</strong></div>
+                    <div class="telemetry-row"><span>J3</span><div class="raw-track"><div id="bar-j3" class="raw-fill current-fill"></div></div><strong id="bar-v-j3">0.0 A</strong></div>
+                    <div class="telemetry-row"><span>J4</span><div class="raw-track"><div id="bar-j4" class="raw-fill current-fill"></div></div><strong id="bar-v-j4">0.0 A</strong></div>
+                    <div class="telemetry-row"><span>J5</span><div class="raw-track"><div id="bar-j5" class="raw-fill current-fill"></div></div><strong id="bar-v-j5">0.0 A</strong></div>
+                    <div class="telemetry-row"><span>J6</span><div class="raw-track"><div id="bar-j6" class="raw-fill current-fill"></div></div><strong id="bar-v-j6">0.0 A</strong></div>
+                    </div>
+                  </section>
+                  <section class="telemetry-panel temp-panel">
+                    <div class="telemetry-panel-head"><h4><i class="fa-solid fa-temperature-half"></i> Temperatura por junta</h4><span>valor bruto em tempo real</span></div>
+                    <div class="telemetry-list">
+                    <div class="telemetry-row"><span>J1</span><div class="raw-track"><div id="g-j1" class="raw-fill temp-fill"></div></div><strong id="g-v-j1">0.0 °C</strong></div>
+                    <div class="telemetry-row"><span>J2</span><div class="raw-track"><div id="g-j2" class="raw-fill temp-fill"></div></div><strong id="g-v-j2">0.0 °C</strong></div>
+                    <div class="telemetry-row"><span>J3</span><div class="raw-track"><div id="g-j3" class="raw-fill temp-fill"></div></div><strong id="g-v-j3">0.0 °C</strong></div>
+                    <div class="telemetry-row"><span>J4</span><div class="raw-track"><div id="g-j4" class="raw-fill temp-fill"></div></div><strong id="g-v-j4">0.0 °C</strong></div>
+                    <div class="telemetry-row"><span>J5</span><div class="raw-track"><div id="g-j5" class="raw-fill temp-fill"></div></div><strong id="g-v-j5">0.0 °C</strong></div>
+                    <div class="telemetry-row"><span>J6</span><div class="raw-track"><div id="g-j6" class="raw-fill temp-fill"></div></div><strong id="g-v-j6">0.0 °C</strong></div>
+                    </div>
+                  </section>
+                </div>
+              </section>
             </div>
           </div>
         </div>
-
-        <aside class="side">
-          <div class="card">
-            <div class="cttl"><i class="fa-solid fa-screwdriver-wrench"></i> Preventivas</div>
-            <div class="trend-container">
-              <div class="trend-item"><div class="trend-text"><strong>Lubrificação das engrenagens</strong><span>Baseada no histórico de torque dos eixos J1-J2-J3.</span></div><span class="trend-badge ok">Ok · 412h</span></div>
-              <div class="trend-item warning"><div class="trend-text"><strong>Vibração e folga</strong><span>Pico harmônico leve detectado na inversão do eixo J2.</span></div><span class="trend-badge attention">Atenção</span></div>
-              <div class="trend-item"><div class="trend-text"><strong>Isolamento do barramento DC</strong><span>Corrente de fuga para terra dentro da tolerância nominal.</span></div><span class="trend-badge ok">Estável</span></div>
-            </div>
-          </div>
-          <div class="card">
-            <div class="cttl"><i class="fa-solid fa-circle-info"></i> Estado do módulo</div>
-            <div class="trend-container">
-              <div class="trend-item"><div class="trend-text"><strong>Telemetria das juntas</strong><span id="telemetry-detail">Aguardando fonte real do robô.</span></div><span id="telemetry-state" class="trend-badge attention">Placeholder</span></div>
-              <div class="trend-item"><div class="trend-text"><strong>Socket.IO</strong><span>Recebendo estado do backend Python atual quando conectado.</span></div><span id="socket-state" class="trend-badge attention">Aguardando</span></div>
-            </div>
-          </div>
-        </aside>
       </section>
 
       <section id="page-parametros" class="page">
@@ -1089,12 +2030,62 @@ function formatarDuracao(segundosTotais) {
   return `${hrs}h ${mins}m ${secs}s`;
 }
 
+
+
+// V17.7: Gauge vetorial único. O arco, ponteiro e pivô escalam como um grupo SVG indivisível.
+function montarGaugesSVG(){
+  document.querySelectorAll('.health-gauge').forEach(el => {
+    if (el.dataset.vectorReady === '1') return;
+    el.dataset.vectorReady = '1';
+    el.innerHTML = `
+      <svg class="health-svg" viewBox="0 0 200 120" preserveAspectRatio="xMidYMid meet" aria-hidden="true">
+        <path class="seg under" d="M20 100 A80 80 0 0 1 43.43 43.43"/>
+        <path class="seg ok" d="M43.43 43.43 A80 80 0 0 1 100 20"/>
+        <path class="seg warn" d="M100 20 A80 80 0 0 1 156.57 43.43"/>
+        <path class="seg crit" d="M156.57 43.43 A80 80 0 0 1 180 100"/>
+        <circle class="hub" cx="100" cy="100" r="38"/>
+        <line class="needle" x1="100" y1="100" x2="100" y2="44"/>
+        <circle class="pivot" cx="100" cy="100" r="3.2"/>
+      </svg>`;
+  });
+}
+window.addEventListener('DOMContentLoaded', montarGaugesSVG);
+setTimeout(montarGaugesSVG, 50);
+
+
+
+function atualizarStatusDotsPorTexto(){
+  document.querySelectorAll('.status-joint-row').forEach(row => {
+    const txt = (row.querySelector('strong')?.textContent || '').toLowerCase();
+    const dot = row.querySelector('.status-dot');
+    if (!dot) return;
+    dot.classList.remove('under','ok','warn','crit');
+    if (txt.includes('crít') || txt.includes('crit')) dot.classList.add('crit');
+    else if (txt.includes('saud') || txt.includes('bom')) dot.classList.add('ok');
+    else if (txt.includes('subutil')) dot.classList.add('under');
+    else dot.classList.add('warn');
+  });
+}
+setInterval(atualizarStatusDotsPorTexto, 1200);
+window.addEventListener('DOMContentLoaded', atualizarStatusDotsPorTexto);
+
+function selecionarModoJuntas(modo){
+  const modoSeguro = modo === 'telemetry' ? 'telemetry' : 'general';
+  document.querySelectorAll('.view-tab').forEach(btn => btn.classList.toggle('active', btn.dataset.mode === modoSeguro));
+  const general = document.getElementById('joint-mode-general');
+  const telemetry = document.getElementById('joint-mode-telemetry');
+  if (general) general.classList.toggle('active', modoSeguro === 'general');
+  if (telemetry) telemetry.classList.toggle('active', modoSeguro === 'telemetry');
+  requestAnimationFrame(ajustarLayoutGestao);
+}
+
 function atualizarBarraCorrente(j, valorAmpere) {
   const corrente = Number(valorAmpere || 0);
   const barFill = document.getElementById(`bar-j${j}`);
   if (barFill) {
     const pct = Math.max(0, Math.min(100, (Math.abs(corrente) / 8) * 100));
     barFill.style.width = `${pct}%`;
+    barFill.style.background = Math.abs(corrente) > 5 ? 'var(--er)' : (Math.abs(corrente) > 3 ? 'var(--wn)' : 'var(--ac)');
   }
   const val = document.getElementById(`bar-v-j${j}`);
   if (val) val.innerText = `${corrente.toFixed(2)} A`;
@@ -1102,14 +2093,114 @@ function atualizarBarraCorrente(j, valorAmpere) {
 
 function atualizarGaugeTemperatura(j, valorTemp) {
   const temp = Number(valorTemp || 0);
-  const gaugeCirc = document.getElementById(`g-j${j}`);
-  if (gaugeCirc) {
-    const grausGradiente = Math.max(0, Math.min(360, (temp / 100) * 360));
-    const corGauge = temp > 55 ? 'var(--wn)' : 'var(--ok)';
-    gaugeCirc.style.background = `conic-gradient(${corGauge} ${grausGradiente}deg, var(--bd) 0deg)`;
+  const tempFill = document.getElementById(`g-j${j}`);
+  if (tempFill) {
+    const pct = Math.max(0, Math.min(100, (temp / 90) * 100));
+    tempFill.style.width = `${pct}%`;
+    tempFill.style.background = temp > 65 ? 'var(--er)' : (temp > 55 ? 'var(--wn)' : 'var(--ok)');
   }
   const gv = document.getElementById(`g-v-j${j}`);
-  if (gv) gv.innerText = `${temp.toFixed(1)}°C`;
+  if (gv) gv.innerText = `${temp.toFixed(1)} °C`;
+}
+
+
+function abrirDetalheCelula(){
+  const el = document.getElementById('cell-detail');
+  if (el) el.classList.remove('hidden');
+  requestAnimationFrame(ajustarLayoutGestao);
+}
+function fecharDetalheCelula(){
+  const el = document.getElementById('cell-detail');
+  if (el) el.classList.add('hidden');
+  requestAnimationFrame(ajustarLayoutGestao);
+}
+function alternarPainelDetalhe(id, btn){
+  const el = document.getElementById(id);
+  if (!el) return;
+  const aberto = el.classList.toggle('open');
+  const card = btn ? btn.closest('.dash-card') : el.closest('.dash-card');
+  if (card) card.classList.toggle('summary-mode', !aberto);
+  if (btn) btn.innerHTML = aberto ? 'Recolher detalhes <i class="fa-solid fa-chevron-up"></i>' : 'Expandir detalhes <i class="fa-solid fa-chevron-down"></i>';
+  requestAnimationFrame(ajustarLayoutGestao);
+}
+function alternarDetalheJunta(btn){
+  // Compatibilidade com versões anteriores: o detalhe agora é modo global do painel de juntas.
+  selecionarModoJuntas('telemetry');
+}
+function ajustarLayoutGestao(){
+  document.body.classList.toggle('gestao-small-h', window.innerHeight < 840);
+  const detail = document.getElementById('cell-detail');
+  const aberto = !!detail && !detail.classList.contains('hidden');
+  document.body.classList.toggle('gestao-detail-open', aberto);
+}
+window.addEventListener('resize', ajustarLayoutGestao);
+window.addEventListener('DOMContentLoaded', ajustarLayoutGestao);
+function definirNivelGauge(id, level){
+  const el = document.getElementById(id);
+  if (!el) return;
+  const n = Math.max(1, Math.min(4, Number(level) || 2));
+  el.setAttribute('data-level', String(n));
+}
+function mediaNumerica(arr){
+  const nums = (Array.isArray(arr) ? arr : []).map(Number).filter(v => Number.isFinite(v));
+  if (!nums.length) return 0;
+  return nums.reduce((a,b)=>a+b,0) / nums.length;
+}
+function classificarSaude(diag){
+  if (!diag) return {level:1,label:'Sem dados', current:'Aguardando'};
+  if (diag.status_emergencia || diag.protective_stop || (diag.codigo_erro && String(diag.codigo_erro) !== '0')) return {level:4,label:'Crítico', current:'Intervenção requerida'};
+  if (!diag.telemetria_real) return {level:3,label:'Não validada', current:'Telemetria não validada'};
+  return {level:2,label:'Nominal', current:'Operação nominal'};
+}
+function atualizarGestaoCelula(diag){
+  const estado = classificarSaude(diag);
+  definirNivelGauge('cell-health-gauge', estado.level);
+  definirNivelGauge('current-health-gauge', estado.level === 4 ? 4 : (diag && diag.telemetria_real ? 2 : 3));
+  definirNivelGauge('temp-health-gauge', estado.level === 4 ? 4 : (diag && diag.telemetria_real ? 2 : 3));
+  const status = document.getElementById('cell-actual-status');
+  if (status) status.innerText = estado.current;
+  const correntes = Array.isArray(diag && diag.correntes) ? diag.correntes : [];
+  const temperaturas = Array.isArray(diag && diag.temperaturas) ? diag.temperaturas : [];
+  const avgC = mediaNumerica(correntes);
+  const avgT = mediaNumerica(temperaturas);
+  const avgCLabel = document.getElementById('avg-current-label');
+  const avgTLabel = document.getElementById('avg-temp-label');
+  if (avgCLabel) avgCLabel.innerText = `${avgC.toFixed(2)} A média`;
+  if (avgTLabel) avgTLabel.innerText = `${avgT.toFixed(1)} °C média`;
+  const cText = document.getElementById('current-health-text');
+  const tText = document.getElementById('temp-health-text');
+  if (cText) cText.innerText = diag && diag.telemetria_real ? 'Corrente nominal' : 'Fonte não validada';
+  if (tText) tText.innerText = diag && diag.telemetria_real ? 'Temperatura nominal' : 'Fonte não validada';
+  for (let j=1;j<=6;j++) {
+    const c = Number(correntes[j-1] || 0);
+    const t = Number(temperaturas[j-1] || 0);
+    const jc = document.getElementById(`joint-current-${j}`);
+    const jt = document.getElementById(`joint-temp-${j}`);
+    const jh = document.getElementById(`joint-health-${j}`);
+    if (jc) jc.innerText = `${c.toFixed(2)} A`;
+    if (jt) jt.innerText = `${t.toFixed(1)} °C`;
+    let level = 3;
+    let label = 'Não validada';
+    let color = 'var(--wn)';
+    if (diag && diag.telemetria_real) {
+      if (t > 65 || Math.abs(c) > 5) { level = 4; label = 'Crítica'; color = 'var(--er)'; }
+      else if (t > 55 || Math.abs(c) > 3) { level = 3; label = 'Atenção'; color = 'var(--wn)'; }
+      else { level = 2; label = 'Nominal'; color = 'var(--ok)'; }
+    }
+    definirNivelGauge(`joint-main-gauge-${j}`, level);
+    definirNivelGauge(`current-health-gauge-${j}`, (!diag || !diag.telemetria_real) ? 3 : (Math.abs(c) > 5 ? 4 : (Math.abs(c) > 3 ? 3 : 2)));
+    definirNivelGauge(`temp-health-gauge-${j}`, (!diag || !diag.telemetria_real) ? 3 : (t > 65 ? 4 : (t > 55 ? 3 : 2)));
+    const ch = document.getElementById(`current-health-j${j}`);
+    const th = document.getElementById(`temp-health-j${j}`);
+    if (ch) ch.innerText = (!diag || !diag.telemetria_real) ? 'Não validada' : (Math.abs(c) > 5 ? 'Crítica' : (Math.abs(c) > 3 ? 'Atenção' : 'Nominal'));
+    if (th) th.innerText = (!diag || !diag.telemetria_real) ? 'Não validada' : (t > 65 ? 'Crítica' : (t > 55 ? 'Atenção' : 'Nominal'));
+    if (jh) { jh.innerText = label; jh.style.color = color; }
+  }
+  montarGaugesSVG();
+  const warnCount = document.getElementById('cell-warn-count');
+  const critCount = document.getElementById('cell-crit-count');
+  if (warnCount) warnCount.innerText = (!diag || !diag.telemetria_real) ? '1' : '0';
+  if (critCount) critCount.innerText = estado.level === 4 ? '1' : '0';
 }
 
 function atualizarDiagnosticosReais(diag) {
@@ -1177,6 +2268,7 @@ function atualizarDiagnosticosReais(diag) {
     atualizarBarraCorrente(j, correntes[j-1] || 0);
     atualizarGaugeTemperatura(j, temperaturas[j-1] || 0);
   }
+  atualizarGestaoCelula(diag);
 }
 
 function atualizarIndicadoresDemo() {
@@ -1198,12 +2290,17 @@ function atualizarIndicadoresDemo() {
   if (telemetryDetail) telemetryDetail.innerText = 'Sem backend conectado. Valores simulados localmente.';
   if (telemetryWarning) { telemetryWarning.className = 'telemetry-warning'; telemetryWarning.innerText = 'Modo demo local: backend não conectado.'; }
 
+  const correntesDemo = [];
+  const temperaturasDemo = [];
   for (let j = 1; j <= 6; j++) {
     const baseCorr = Math.sin(Date.now() / 600 + j) * 1.5 + 2.5;
     const baseTemp = Math.sin(Date.now() / 2000 + j) * 4 + 38;
+    correntesDemo.push(baseCorr);
+    temperaturasDemo.push(baseTemp);
     atualizarBarraCorrente(j, baseCorr);
     atualizarGaugeTemperatura(j, baseTemp);
   }
+  atualizarGestaoCelula({telemetria_real:false, telemetria_status:'modo demo local', correntes:correntesDemo, temperaturas:temperaturasDemo});
 }
 
 // Chamada imediata + intervalo. Com backend conectado, os dados reais substituem a simulação.
