@@ -27,16 +27,13 @@ HMI_POLLING_PATCH = r'''
   .workspace-card .workspace-field{display:flex;flex-direction:column;gap:4px}
   .workspace-card label{font-size:11px;font-weight:800;color:var(--navy);text-transform:uppercase;letter-spacing:.05em}
   .workspace-card input{height:34px;border:1px solid var(--line);border-radius:8px;padding:0 10px;font-weight:800;color:var(--navy);background:#fff}
-  .workspace-card .workspace-line{display:flex;align-items:center;justify-content:space-between;gap:8px;margin:8px 0}
   .workspace-card .workspace-point{font-size:11px;background:#f7fafc;border:1px solid var(--line);border-radius:8px;padding:8px;color:var(--muted);line-height:1.35}
   .workspace-card .workspace-actions{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:10px}
   .workspace-card .workspace-full{grid-column:1/-1}
-  .workspace-card .workspace-status{border-radius:10px;padding:10px;margin-top:10px;font-size:12px;font-weight:800;line-height:1.35}
+  .workspace-card .workspace-status{white-space:pre-line;border-radius:10px;padding:10px;margin-top:10px;font-size:12px;font-weight:800;line-height:1.35}
   .workspace-card .workspace-status.ok{background:#e8fff5;border:1px solid #8ee0be;color:#0b6b45}
   .workspace-card .workspace-status.warn{background:#fff5dc;border:1px solid #ffc966;color:#7a4a00}
   .workspace-card .workspace-status.err{background:#ffe8e8;border:1px solid #ff9d9d;color:#8a1111}
-  .workspace-card .workspace-toggle{display:flex;align-items:center;gap:8px;font-size:12px;font-weight:900;color:var(--navy)}
-  .workspace-card .workspace-toggle input{height:auto;width:auto}
   #workspace-lock-modal{position:fixed;inset:0;z-index:9999;display:none;align-items:center;justify-content:center;background:rgba(0,20,40,.42);backdrop-filter:blur(2px)}
   #workspace-lock-modal.show{display:flex}
   #workspace-lock-modal .box{width:min(560px,92vw);background:#fff;border-radius:18px;border:2px solid #ff9d9d;box-shadow:0 24px 80px rgba(0,0,0,.24);padding:22px;text-align:left}
@@ -53,11 +50,8 @@ HMI_POLLING_PATCH = r'''
   let ultimoWorkspaceLocked = false;
 
   function safeCall(fnName, arg) {
-    try {
-      if (typeof window[fnName] === 'function') window[fnName](arg);
-    } catch (e) {
-      console.warn('[HMI fallback] falha em', fnName, e);
-    }
+    try { if (typeof window[fnName] === 'function') window[fnName](arg); }
+    catch (e) { console.warn('[HMI fallback] falha em', fnName, e); }
   }
 
   function setBadgeOnline(modoSim) {
@@ -78,6 +72,8 @@ HMI_POLLING_PATCH = r'''
     if (!Array.isArray(p)) return 'não definido';
     return 'X ' + Number(p[0]||0).toFixed(1) + ' · Y ' + Number(p[1]||0).toFixed(1) + ' · Z ' + Number(p[2]||0).toFixed(1);
   }
+
+  function fmt(n) { return Number(n || 0).toFixed(1); }
 
   function ensureWorkspaceModal() {
     if (document.getElementById('workspace-lock-modal')) return;
@@ -102,18 +98,34 @@ HMI_POLLING_PATCH = r'''
     ultimoWorkspaceLocked = locked;
   }
 
+  function textoWorkspace(status, cfg) {
+    cfg = cfg || {};
+    status = status || {};
+    var limits = status.limits || null;
+    var txt = status.message || 'Workspace não configurado.';
+    if (limits) {
+      txt += '\nLargura P1–P2: ' + fmt(limits.edge_length_mm) + ' mm';
+      txt += ' · Profundidade até base: ' + fmt(limits.depth_mm) + ' mm';
+      txt += '\nZ superfície mesa: ' + fmt(limits.z_surface);
+      txt += ' · Margem Z: ' + fmt(limits.z_margin_mm);
+      txt += ' · Z limite TCP: ' + fmt(limits.z_min_tcp);
+      if (status.workspace_coords) {
+        txt += '\nTCP local na mesa: S ' + fmt(status.workspace_coords.s_mm) + ' mm · T ' + fmt(status.workspace_coords.t_mm) + ' mm';
+      }
+    }
+    if (!cfg.enabled) txt += '\nClique em Aplicar workspace para habilitar os limites.';
+    return txt;
+  }
+
   function atualizarWorkspaceUI(ws) {
     try {
       criarWorkspaceUI();
       if (!ws) return;
       var cfg = ws.config || {};
       var status = ws.status || {};
-      var limits = status.limits || null;
-      var enabled = document.getElementById('ws-enabled');
       var zmargin = document.getElementById('ws-z-margin');
       var xymargin = document.getElementById('ws-xy-margin');
       var slow = document.getElementById('ws-slow-zone');
-      if (enabled) enabled.checked = !!cfg.enabled;
       if (zmargin && cfg.z_margin_mm != null) zmargin.value = cfg.z_margin_mm;
       if (xymargin && cfg.xy_margin_mm != null) xymargin.value = cfg.xy_margin_mm;
       if (slow && cfg.slow_zone_mm != null) slow.value = cfg.slow_zone_mm;
@@ -126,18 +138,11 @@ HMI_POLLING_PATCH = r'''
       var st = document.getElementById('ws-status');
       if (st) {
         st.className = 'workspace-status ' + (!cfg.enabled ? 'warn' : status.inside ? 'ok' : 'err');
-        var txt = status.message || 'Workspace não configurado.';
-        if (limits) {
-          txt += '\nX: ' + limits.x_min_safe.toFixed(1) + ' até ' + limits.x_max_safe.toFixed(1) +
-                 ' · Y: ' + limits.y_min_safe.toFixed(1) + ' até ' + limits.y_max_safe.toFixed(1) +
-                 ' · Z mínimo TCP: ' + limits.z_min_tcp.toFixed(1);
-        }
-        st.textContent = txt;
+        st.textContent = textoWorkspace(status, cfg);
       }
       atualizarWorkspaceModal(ws);
     } catch(e) { console.warn('[workspace] falha UI', e); }
   }
-
   window.atualizarWorkspaceUI = atualizarWorkspaceUI;
 
   async function apiJson(url, opts) {
@@ -158,17 +163,32 @@ HMI_POLLING_PATCH = r'''
   async function salvarWorkspace() {
     try {
       var payload = {
-        enabled: !!document.getElementById('ws-enabled')?.checked,
-        z_margin_mm: Number(document.getElementById('ws-z-margin')?.value || 10),
+        enabled: true,
+        z_margin_mm: Number(document.getElementById('ws-z-margin')?.value || 0.5),
         xy_margin_mm: Number(document.getElementById('ws-xy-margin')?.value || 5),
         slow_zone_mm: Number(document.getElementById('ws-slow-zone')?.value || 30)
       };
       var data = await apiJson('/api/workspace', {method:'POST', body:JSON.stringify(payload)});
       atualizarWorkspaceUI(data.workspace || data);
-      if (typeof toast === 'function') toast('Workspace aplicado.');
-    } catch(e) { alert('Erro ao salvar workspace: ' + e.message); }
+      if (typeof toast === 'function') toast('Workspace aplicado e limites habilitados.');
+    } catch(e) { alert('Erro ao aplicar workspace: ' + e.message); }
   }
   window.salvarWorkspace = salvarWorkspace;
+
+  async function desabilitarWorkspace() {
+    try {
+      var payload = {
+        enabled: false,
+        z_margin_mm: Number(document.getElementById('ws-z-margin')?.value || 0.5),
+        xy_margin_mm: Number(document.getElementById('ws-xy-margin')?.value || 5),
+        slow_zone_mm: Number(document.getElementById('ws-slow-zone')?.value || 30)
+      };
+      var data = await apiJson('/api/workspace', {method:'POST', body:JSON.stringify(payload)});
+      atualizarWorkspaceUI(data.workspace || data);
+      if (typeof toast === 'function') toast('Limites da mesa desabilitados.');
+    } catch(e) { alert('Erro ao desabilitar workspace: ' + e.message); }
+  }
+  window.desabilitarWorkspace = desabilitarWorkspace;
 
   async function capturarWorkspacePonto(ponto) {
     try {
@@ -188,9 +208,6 @@ HMI_POLLING_PATCH = r'''
     card.id = 'workspace-card';
     card.innerHTML = `
       <div class="cttl"><i class="fa-solid fa-border-all"></i> Área de trabalho / mesa</div>
-      <div class="workspace-line">
-        <label class="workspace-toggle"><input id="ws-enabled" type="checkbox"> Habilitar limites da mesa</label>
-      </div>
       <div class="workspace-point"><strong>P1</strong><br><span id="ws-p1-val">não definido</span></div>
       <div class="workspace-point"><strong>P2</strong><br><span id="ws-p2-val">não definido</span></div>
       <div class="workspace-actions">
@@ -198,15 +215,16 @@ HMI_POLLING_PATCH = r'''
         <button class="btn btn-o" onclick="capturarWorkspacePonto('p2')"><i class="fa-solid fa-location-crosshairs"></i> Capturar P2</button>
       </div>
       <div class="workspace-grid">
-        <div class="workspace-field"><label>Margem Z <span>mm</span></label><input id="ws-z-margin" type="number" min="0" max="300" step="1" value="10"></div>
+        <div class="workspace-field"><label>Margem Z <span>mm</span></label><input id="ws-z-margin" type="number" min="0" max="300" step="0.1" value="0.5"></div>
         <div class="workspace-field"><label>Margem XY <span>mm</span></label><input id="ws-xy-margin" type="number" min="0" max="300" step="1" value="5"></div>
         <div class="workspace-field workspace-full"><label>Zona lenta perto do limite <span>mm</span></label><input id="ws-slow-zone" type="number" min="1" max="500" step="1" value="30"></div>
       </div>
       <div id="ws-status" class="workspace-status warn">Workspace ainda não configurado.</div>
       <div class="workspace-actions">
-        <button class="btn btn-p workspace-full" onclick="salvarWorkspace()"><i class="fa-solid fa-check"></i> Aplicar workspace</button>
+        <button class="btn btn-p workspace-full" onclick="salvarWorkspace()"><i class="fa-solid fa-check"></i> Aplicar workspace e habilitar limites</button>
+        <button class="btn btn-o workspace-full" onclick="desabilitarWorkspace()"><i class="fa-solid fa-ban"></i> Desabilitar limites</button>
       </div>
-      <div class="param-help">P1 e P2 são cantos opostos da mesa no frame da base do robô. Z da superfície = média do Z dos dois pontos. Se o TCP sair da área, o joystick é bloqueado e o retorno deve ser por Drag Mode / Free Drive.</div>`;
+      <div class="param-help">P1 e P2 definem a borda distante da mesa. A base do robô (0,0) define a profundidade por projeção perpendicular. Z da superfície = menor Z entre P1 e P2. Se o TCP sair da área, o joystick é bloqueado e o retorno deve ser por Drag Mode / Free Drive.</div>`;
     side.appendChild(card);
     carregarWorkspace();
   }
@@ -224,36 +242,14 @@ HMI_POLLING_PATCH = r'''
 
     if (Array.isArray(dados.tcp)) safeCall('atualizarTcpNumerico', dados.tcp);
     if (Array.isArray(dados.pontos)) safeCall('renderizarListaPontos', dados.pontos);
-
     setBadgeOnline(!!dados.modo_sim);
 
-    try {
-      if (dados.diagnosticos && typeof atualizarDiagnosticosReais === 'function') {
-        atualizarDiagnosticosReais(dados.diagnosticos);
-      }
-    } catch(e) {}
-
-    try {
-      if (dados.parametros && typeof atualizarParametrosUI === 'function') {
-        atualizarParametrosUI(dados.parametros, false);
-      }
-    } catch(e) {}
-
-    try {
-      if (typeof dados.controle_manual_pausado !== 'undefined' && typeof atualizarStatusControleManual === 'function') {
-        atualizarStatusControleManual(!!dados.controle_manual_pausado);
-      }
-    } catch(e) {}
-
-    try {
-      if (dados.workspace) atualizarWorkspaceUI(dados.workspace);
-    } catch(e) {}
-
-    try {
-      if (typeof desenharVisualizacao === 'function') desenharVisualizacao();
-    } catch(e) {}
+    try { if (dados.diagnosticos && typeof atualizarDiagnosticosReais === 'function') atualizarDiagnosticosReais(dados.diagnosticos); } catch(e) {}
+    try { if (dados.parametros && typeof atualizarParametrosUI === 'function') atualizarParametrosUI(dados.parametros, false); } catch(e) {}
+    try { if (typeof dados.controle_manual_pausado !== 'undefined' && typeof atualizarStatusControleManual === 'function') atualizarStatusControleManual(!!dados.controle_manual_pausado); } catch(e) {}
+    try { if (dados.workspace) atualizarWorkspaceUI(dados.workspace); } catch(e) {}
+    try { if (typeof desenharVisualizacao === 'function') desenharVisualizacao(); } catch(e) {}
   }
-
   window.__paybackAplicarEstado = aplicarEstado;
 
   async function pollEstado() {
@@ -262,7 +258,6 @@ HMI_POLLING_PATCH = r'''
       if (!r.ok) return;
       var dados = await r.json();
       aplicarEstado(dados);
-
       try {
         var el = document.getElementById('socket-state');
         if (el) { el.className = 'trend-badge ok'; el.innerText = 'HTTP OK'; }
@@ -337,7 +332,8 @@ def atualizar_workspace():
     try:
         workspace = adapter.set_workspace_config(dados)
         socketio.emit('atualizar_estado', adapter.snapshot_state())
-        socketio.emit('execucao_status', {'message': 'Workspace da mesa atualizado.', 'status': 'info'})
+        msg = 'Workspace da mesa habilitado.' if workspace.get('config', {}).get('enabled') else 'Workspace da mesa desabilitado.'
+        socketio.emit('execucao_status', {'message': msg, 'status': 'info'})
         return jsonify({'status': 'success', 'workspace': workspace})
     except Exception as e:
         return jsonify({'status': 'error', 'message': str(e), 'workspace': adapter.get_workspace_config()}), 400
