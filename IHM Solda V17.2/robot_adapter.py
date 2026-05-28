@@ -1,12 +1,14 @@
-# robot_adapter.py — wrapper V17.2 com TCP, workspace e segurança de trajetória.
+# robot_adapter.py — wrapper V17.2
 #
-# Carrega o adapter histórico da solda e aplica patches locais:
+# Wrapper local para a IHM Solda V17.2.
+# Carrega o adapter histórico em Programas de Robôs/JAKA/Solda e aplica camadas
+# de correção/segurança sem mexer na pasta histórica:
 # - TCP real publicado continuamente;
-# - telemetria não sobrescreve o TCP oficial usado para salvar pontos;
+# - telemetria não sobrescreve o TCP oficial usado para pontos;
 # - workspace orientado por P1/P2 + base do robô;
-# - joystick é ignorado durante trajetória SEM mandar jog_stop/parar_grupo;
-# - saída digital de solda só liga durante trajetória;
-# - trajetória NÃO aborta por "robô parado". Parada pode ser etapa legítima de processo.
+# - joystick ignorado durante trajetória, sem mandar jog_stop;
+# - saída digital de solda bloqueada e forçada OFF fora de trajetória;
+# - trajetória não aborta por "robô parado".
 
 from pathlib import Path
 import importlib.util
@@ -94,7 +96,6 @@ def _coerce_pose(value: Any, depth: int = 0, origem: str = "sdk") -> Optional[Li
             pose = _coerce_pose(getattr(value, attr), depth + 1, origem)
             if pose is not None:
                 return pose
-
     return None
 
 
@@ -112,8 +113,7 @@ def _pose_parece_salto_falso(self, nova: List[float]) -> bool:
         return False
     if getattr(self, "executando_trajetoria", False):
         return False
-    grupo = getattr(self, "grupo_ativo", None)
-    if grupo in ("ROTAT_TCP", "EIXO_RZ"):
+    if getattr(self, "grupo_ativo", None) in ("ROTAT_TCP", "EIXO_RZ"):
         return False
     return _xyz_delta_abs(atual, nova) < 2.0 and _rot_delta_abs(atual, nova) > math.radians(20.0)
 
@@ -205,11 +205,6 @@ def _workspace_limits_from_cfg(cfg: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     xs = [v[0] for v in verts]
     ys = [v[1] for v in verts]
 
-    s_min_safe = xy_margin
-    s_max_safe = edge_len - xy_margin
-    t_min_safe = xy_margin
-    t_max_safe = depth - xy_margin
-
     return {
         "mode": "oriented_from_far_edge_and_robot_base",
         "p1_xy": a,
@@ -228,10 +223,10 @@ def _workspace_limits_from_cfg(cfg: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         "s_max": edge_len,
         "t_min": 0.0,
         "t_max": depth,
-        "s_min_safe": s_min_safe,
-        "s_max_safe": s_max_safe,
-        "t_min_safe": t_min_safe,
-        "t_max_safe": t_max_safe,
+        "s_min_safe": xy_margin,
+        "s_max_safe": edge_len - xy_margin,
+        "t_min_safe": xy_margin,
+        "t_max_safe": depth - xy_margin,
         "z_p1": float(p1[2]),
         "z_p2": float(p2[2]),
         "z_surface_source": "min_p1_p2",
@@ -253,11 +248,8 @@ def _workspace_limits_from_cfg(cfg: Dict[str, Any]) -> Optional[Dict[str, Any]]:
 
 def _workspace_coords_xy(limits: Dict[str, Any], x: float, y: float):
     p = [float(x), float(y)]
-    a = limits["p1_xy"]
-    rel = _sub2(p, a)
-    s = _dot2(rel, limits["u_edge"])
-    t = _dot2(rel, limits["n_depth"])
-    return s, t
+    rel = _sub2(p, limits["p1_xy"])
+    return _dot2(rel, limits["u_edge"]), _dot2(rel, limits["n_depth"])
 
 
 def _workspace_status(self) -> Dict[str, Any]:
@@ -277,15 +269,16 @@ def _workspace_status(self) -> Dict[str, Any]:
         status["message"] = "Workspace desabilitado."
         return status
     if limits is None:
-        status["inside"] = False
-        status["jog_locked"] = True
-        status["message"] = "Workspace habilitado, mas P1/P2 não formam uma área geométrica válida."
+        status.update({
+            "inside": False,
+            "jog_locked": True,
+            "message": "Workspace habilitado, mas P1/P2 não formam uma área geométrica válida.",
+        })
         return status
 
-    outside = []
     x, y, z = float(tcp[0]), float(tcp[1]), float(tcp[2])
     s, t = _workspace_coords_xy(limits, x, y)
-
+    outside = []
     if s < limits["s_min_safe"]:
         outside.append("S-")
     elif s > limits["s_max_safe"]:
@@ -392,7 +385,6 @@ def _limitar_velocidade_workspace(self, eixo: int, vel: float) -> float:
         return self._bloquear_jog_workspace("TCP fora da área; movimento não autorizado", eixo, vel)
 
     self._workspace_stop_emitido = False
-
     if eixo not in (0, 1, 2):
         return vel
 
@@ -452,7 +444,6 @@ def _limitar_velocidade_workspace(self, eixo: int, vel: float) -> float:
 def _refresh_tcp_from_robot(self, origem: str = "sdk", aplicar_filtro: bool = True) -> bool:
     if getattr(self, "modo_simulacao", True):
         return False
-
     try:
         has_robot = self.driver.has_robot()
     except Exception:
@@ -525,7 +516,7 @@ def _amostrar_tcp_estavel_para_ponto(self) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# Segurança de trajetória / status do robô
+# Segurança de trajetória / solda
 # ---------------------------------------------------------------------------
 
 def _parse_bool(v):
@@ -562,7 +553,6 @@ def _robot_status_updates(self) -> Dict[str, Any]:
 def _robot_fault_reasons_from_diag(self) -> List[str]:
     with self._state_lock:
         d = copy.deepcopy(self.diagnosticos)
-
     reasons = []
     code = d.get("codigo_erro", 0)
     try:
@@ -579,7 +569,6 @@ def _robot_fault_reasons_from_diag(self) -> List[str]:
     ):
         if _parse_bool(d.get(key)) is True:
             reasons.append(label)
-
     return reasons
 
 
@@ -606,6 +595,39 @@ def _marcar_interrupcao_trajetoria(self, motivo: str, reasons=None) -> None:
             self.diagnosticos["falha_desligando_solda_em_interrupcao"] = str(e)
 
 
+def _forcar_saida_solda_off_fora_de_trajetoria(self, origem="watchdog") -> bool:
+    """Camada de segurança ativa.
+
+    Se o estado da IHM diz que NÃO há trajetória em execução, a saída física de solda
+    é forçada para OFF de forma periódica, mesmo que o estado interno diga que já está
+    desligada. Isso cobre saída ligada por chamada anterior, estado interno defasado
+    ou acionamento externo pela controladora.
+    """
+    if getattr(self, "executando_trajetoria", False):
+        return False
+
+    now = time.time()
+    last = float(getattr(self, "_weld_safety_last_force_off_ts", 0.0) or 0.0)
+    if now - last < 0.25:
+        return False
+    self._weld_safety_last_force_off_ts = now
+
+    try:
+        ok = _original_set_saida_digital(False, confirmar=False)
+        with self._state_lock:
+            self.diagnosticos["solda_forcada_off_fora_trajetoria"] = True
+            self.diagnosticos["solda_forcada_off_origem"] = origem
+            self.diagnosticos["solda_forcada_off_ts"] = now
+        return bool(ok)
+    except Exception as e:
+        with self._state_lock:
+            self.diagnosticos["solda_forcada_off_erro"] = str(e)
+            self.diagnosticos["solda_forcada_off_origem"] = origem
+            self.diagnosticos["solda_forcada_off_ts"] = now
+        print(f"[SEGURANÇA] Falha forçando solda OFF fora de trajetória: {e}")
+        return False
+
+
 def _consumir_botoes_joystick(self, joy) -> None:
     for b in (4, 5, 6, 7, 8, 15):
         try:
@@ -615,8 +637,8 @@ def _consumir_botoes_joystick(self, joy) -> None:
 
 
 def _bloquear_joystick_por_trajetoria(self, joy=None) -> None:
-    # Ponto crítico: durante trajetória o joystick deve ser IGNORADO, não deve mandar
-    # jog_stop/parar_grupo. Jog_stop para o movimento do robô e mata o MoveL/MoveC.
+    # Durante trajetória o joystick é ignorado. Não manda jog_stop/parar_grupo,
+    # porque isso interrompe MoveL/MoveC em andamento.
     self.grupo_ativo = None
     if not getattr(self, "_traj_joystick_block_log_emitido", False):
         self._traj_joystick_block_log_emitido = True
@@ -667,8 +689,6 @@ def _patched_aguardar_chegada_por_tcp(self, alvo, tol_mm=2.0, timeout_s=120.0, c
         else:
             stable = 0
 
-        # Sem heurística de "robô parado fora do alvo". Parado pode ser espera de IO,
-        # pausa de processo, movimento lento ou leitura repetida de TCP.
         time.sleep(0.03)
 
     self._marcar_interrupcao_trajetoria("timeout aguardando chegada ao último ponto", [f"timeout={timeout_s}s"])
@@ -692,6 +712,7 @@ _original_executar_trajetoria = adapter.executar_trajetoria
 adapter.workspace = _workspace_default()
 adapter._workspace_stop_emitido = False
 adapter._traj_joystick_block_log_emitido = False
+adapter._weld_safety_last_force_off_ts = 0.0
 
 
 def _patched_snapshot_state(self):
@@ -703,6 +724,7 @@ def _patched_snapshot_state(self):
         "trajetoria_interrompida": bool(self.diagnosticos.get("trajetoria_interrompida", False)),
         "trajetoria_interrupcao_motivo": self.diagnosticos.get("trajetoria_interrupcao_motivo", ""),
         "solda_saida_digital_ativa": bool(getattr(self, "saida_digital_ativa", False)),
+        "solda_forcada_off_fora_trajetoria": bool(self.diagnosticos.get("solda_forcada_off_fora_trajetoria", False)),
     }
     return dados
 
@@ -728,6 +750,7 @@ def _patched_conectar(self, ip="192.168.0.200"):
                 break
             time.sleep(0.08)
         self._probe_robot_fault()
+        self._forcar_saida_solda_off_fora_de_trajetoria("connect")
         if self.on_state_update:
             self.on_state_update(self.snapshot_state())
     return ok
@@ -739,7 +762,8 @@ def _patched_set_saida_digital(self, ativo: bool, confirmar=False, timeout_s=2.0
         with self._state_lock:
             self.diagnosticos["solda_bloqueada_fora_de_trajetoria"] = True
             self.diagnosticos["solda_bloqueio_ts"] = time.time()
-        print("[SEGURANÇA] Saída digital de solda bloqueada fora de trajetória.")
+        print("[SEGURANÇA] Saída digital de solda bloqueada fora de trajetória. Forçando OFF.")
+        self._forcar_saida_solda_off_fora_de_trajetoria("bloqueio_set_true")
         return False
 
     ok = _original_set_saida_digital(ativo, confirmar=confirmar, timeout_s=timeout_s)
@@ -765,11 +789,12 @@ def _patched_update_telemetry_low_freq(self):
     result = _original_update_telemetry_low_freq()
 
     try:
-        fault_reasons = self._probe_robot_fault() if getattr(self, "executando_trajetoria", False) else []
-        if fault_reasons and getattr(self, "saida_digital_ativa", False):
-            self._marcar_interrupcao_trajetoria("status de falha/parada do robô", fault_reasons)
-        if (not getattr(self, "executando_trajetoria", False)) and getattr(self, "saida_digital_ativa", False):
-            self.set_saida_digital(False, confirmar=False)
+        if getattr(self, "executando_trajetoria", False):
+            fault_reasons = self._probe_robot_fault()
+            if fault_reasons and getattr(self, "saida_digital_ativa", False):
+                self._marcar_interrupcao_trajetoria("status de falha/parada do robô", fault_reasons)
+        else:
+            self._forcar_saida_solda_off_fora_de_trajetoria("telemetry_low_freq")
     except Exception as e:
         with self._state_lock:
             self.diagnosticos["trajectory_safety_update_error"] = str(e)
@@ -786,6 +811,7 @@ def _patched_enviar_jog(self, eixo, vel, coord):
     self._traj_joystick_block_log_emitido = False
     with self._state_lock:
         self.diagnosticos["joystick_bloqueado_por_trajetoria"] = False
+    self._forcar_saida_solda_off_fora_de_trajetoria("antes_jog")
     vel_filtrada = self._limitar_velocidade_workspace(int(eixo), float(vel))
     return _original_enviar_jog(eixo, vel_filtrada, coord)
 
@@ -797,6 +823,7 @@ def _patched_processar_joystick(self, joy):
     self._traj_joystick_block_log_emitido = False
     with self._state_lock:
         self.diagnosticos["joystick_bloqueado_por_trajetoria"] = False
+    self._forcar_saida_solda_off_fora_de_trajetoria("joystick_idle")
     return _original_processar_joystick(joy)
 
 
@@ -808,8 +835,8 @@ def _patched_executar_trajetoria(self) -> str:
         self.diagnosticos["joystick_bloqueado_por_trajetoria"] = False
         self.diagnosticos["solda_bloqueada_fora_de_trajetoria"] = False
 
-    # Para somente jog manual pendente ANTES de começar a trajetória.
-    # Depois que a trajetória começou, o joystick é ignorado sem mandar stop.
+    # Se havia jog manual ativo, para antes de entregar controle à trajetória.
+    # Durante a trajetória, o joystick passa a ser ignorado sem mandar stop.
     try:
         if getattr(self, "grupo_ativo", None) is not None:
             self.parar_grupo([0, 1, 2, 3, 4, 5])
@@ -821,8 +848,7 @@ def _patched_executar_trajetoria(self) -> str:
         return _original_executar_trajetoria()
     finally:
         try:
-            if getattr(self, "saida_digital_ativa", False):
-                self.set_saida_digital(False, confirmar=False)
+            _original_set_saida_digital(False, confirmar=False)
         except Exception as e:
             with self._state_lock:
                 self.diagnosticos["falha_desligando_solda_finalmente"] = str(e)
@@ -861,6 +887,10 @@ def _patched_iniciar_loop_controle(self):
                     self._contador_telemetria = 0
                     self._update_telemetry_low_freq()
 
+                # Watchdog de solda: se não há trajetória, DO de solda fica OFF.
+                if not getattr(self, "executando_trajetoria", False):
+                    self._forcar_saida_solda_off_fora_de_trajetoria("loop")
+
                 if joy:
                     try:
                         if not joy.get_init():
@@ -898,6 +928,7 @@ adapter._robot_status_updates = MethodType(_robot_status_updates, adapter)
 adapter._robot_fault_reasons_from_diag = MethodType(_robot_fault_reasons_from_diag, adapter)
 adapter._probe_robot_fault = MethodType(_probe_robot_fault, adapter)
 adapter._marcar_interrupcao_trajetoria = MethodType(_marcar_interrupcao_trajetoria, adapter)
+adapter._forcar_saida_solda_off_fora_de_trajetoria = MethodType(_forcar_saida_solda_off_fora_de_trajetoria, adapter)
 adapter._consumir_botoes_joystick = MethodType(_consumir_botoes_joystick, adapter)
 adapter._bloquear_joystick_por_trajetoria = MethodType(_bloquear_joystick_por_trajetoria, adapter)
 adapter.snapshot_state = MethodType(_patched_snapshot_state, adapter)
