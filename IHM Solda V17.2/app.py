@@ -4,6 +4,7 @@
 # Patch: fallback HTTP /api/estado + UI de workspace + desenho do workspace na trajetória.
 
 import os
+import time
 import eventlet
 
 eventlet.monkey_patch()
@@ -11,14 +12,144 @@ eventlet.monkey_patch()
 from eventlet import tpool
 from flask import Flask, jsonify, request, make_response
 from flask_socketio import SocketIO
+from types import MethodType
 
 from robot_adapter import adapter
+import robot_adapter as robot_adapter_mod
 
 app = Flask(__name__, template_folder='.')
 app.config['SECRET_KEY'] = 'payback_industrial_secret_2026'
 socketio = SocketIO(app, cors_allowed_origins='*', async_mode='eventlet')
 
 DEFAULT_ROBOT_IP = os.environ.get('JAKA_IP', '10.5.5.100')
+
+
+def _apply_directional_workspace_jog_patch():
+    """Permite jog de retorno quando o TCP já está fora do workspace.
+
+    Regra operacional:
+    - dentro da área: usa o limitador normal;
+    - fora da área: permite apenas comandos cujo vetor reduza a distância até a área válida;
+    - comandos que afastam mais ou tangenciam sem ajudar continuam bloqueados.
+    """
+    if getattr(adapter, '_workspace_directional_jog_patch_applied', False):
+        return
+
+    original_limiter = getattr(adapter, '_limitar_velocidade_workspace', None)
+    if not callable(original_limiter):
+        return
+
+    def clamp(v, lo, hi):
+        return max(lo, min(hi, v))
+
+    def safe_limits(self):
+        cfg = getattr(self, 'workspace', {}) or {}
+        if not cfg.get('enabled'):
+            return None, cfg
+        try:
+            return robot_adapter_mod._workspace_limits_from_cfg(cfg), cfg
+        except Exception:
+            return None, cfg
+
+    def local_error_vector(limits, tcp):
+        s, t = robot_adapter_mod._workspace_coords_xy(limits, float(tcp[0]), float(tcp[1]))
+        z = float(tcp[2])
+        target_s = clamp(s, limits['s_min_safe'], limits['s_max_safe'])
+        target_t = clamp(t, limits['t_min_safe'], limits['t_max_safe'])
+        target_z = max(z, limits['z_min_tcp'])
+        return {
+            's': s,
+            't': t,
+            'z': z,
+            'err_s': target_s - s,
+            'err_t': target_t - t,
+            'err_z': target_z - z,
+        }
+
+    def is_inside_error(err):
+        return abs(err['err_s']) < 1e-9 and abs(err['err_t']) < 1e-9 and abs(err['err_z']) < 1e-9
+
+    def local_motion(limits, eixo, vel):
+        eixo = int(eixo)
+        vel = float(vel)
+        ds = dt = dz = 0.0
+        if eixo == 0:
+            ds = robot_adapter_mod._dot2([vel, 0.0], limits['u_edge'])
+            dt = robot_adapter_mod._dot2([vel, 0.0], limits['n_depth'])
+        elif eixo == 1:
+            ds = robot_adapter_mod._dot2([0.0, vel], limits['u_edge'])
+            dt = robot_adapter_mod._dot2([0.0, vel], limits['n_depth'])
+        elif eixo == 2:
+            dz = vel
+        else:
+            return None
+        return ds, dt, dz
+
+    def record_directional_block(self, motivo, eixo, vel, err=None):
+        try:
+            with self._state_lock:
+                self.diagnosticos['workspace_bloqueio'] = {
+                    'motivo': motivo,
+                    'eixo': int(eixo),
+                    'vel_original': float(vel),
+                    'erro_retorno': err,
+                    'ts': time.time(),
+                }
+        except Exception:
+            pass
+        return 0.0
+
+    def directional_limiter(self, eixo, vel):
+        limits, cfg = safe_limits(self)
+        if not cfg.get('enabled'):
+            return float(vel)
+
+        try:
+            self._refresh_tcp_from_robot('workspace_limit')
+        except Exception:
+            pass
+
+        limits, cfg = safe_limits(self)
+        if limits is None:
+            return record_directional_block(self, 'workspace inválido ou não configurado', eixo, vel)
+
+        tcp = self._copy_tcp()
+        err = local_error_vector(limits, tcp)
+        if is_inside_error(err):
+            return original_limiter(int(eixo), float(vel))
+
+        vel = float(vel)
+        if abs(vel) < 1e-9:
+            return 0.0
+
+        motion = local_motion(limits, eixo, vel)
+        if motion is None:
+            return record_directional_block(self, 'TCP fora da área; rotação bloqueada até retornar', eixo, vel, err)
+
+        ds, dt, dz = motion
+        retorno = ds * err['err_s'] + dt * err['err_t'] + dz * err['err_z']
+        if retorno > 1e-9:
+            try:
+                self._workspace_stop_emitido = False
+                with self._state_lock:
+                    self.diagnosticos['workspace_retorno_por_jog'] = {
+                        'eixo': int(eixo),
+                        'vel': vel,
+                        'retorno_score': retorno,
+                        'erro_retorno': err,
+                        'ts': time.time(),
+                    }
+            except Exception:
+                pass
+            return vel
+
+        return record_directional_block(self, 'TCP fora da área; movimento não aponta para dentro', eixo, vel, err)
+
+    adapter._limitar_velocidade_workspace = MethodType(directional_limiter, adapter)
+    adapter._workspace_directional_jog_patch_applied = True
+
+
+_apply_directional_workspace_jog_patch()
 
 
 HMI_POLLING_PATCH = r'''
@@ -36,11 +167,11 @@ HMI_POLLING_PATCH = r'''
   .workspace-card .workspace-status.err{background:#ffe8e8;border:1px solid #ff9d9d;color:#8a1111}
   #workspace-lock-modal{position:fixed;inset:0;z-index:9999;display:none;align-items:center;justify-content:center;background:rgba(0,20,40,.42);backdrop-filter:blur(2px)}
   #workspace-lock-modal.show{display:flex}
-  #workspace-lock-modal .box{width:min(560px,92vw);background:#fff;border-radius:18px;border:2px solid #ff9d9d;box-shadow:0 24px 80px rgba(0,0,0,.24);padding:22px;text-align:left}
-  #workspace-lock-modal h2{margin:0 0 8px;color:#8a1111;font-size:20px;letter-spacing:.02em}
-  #workspace-lock-modal p{margin:0 0 14px;color:#243b53;font-size:14px;line-height:1.45;font-weight:700}
-  #workspace-lock-modal .meta{background:#fff5f5;border:1px solid #ffd0d0;border-radius:12px;padding:10px;margin-top:10px;color:#8a1111;font-size:12px;font-weight:900}
-  #workspace-lock-modal button{margin-top:14px;border:0;border-radius:999px;padding:10px 18px;font-weight:900;background:#0aaed0;color:white;cursor:pointer}
+  #workspace-lock-modal .box{width:min(460px,92vw);background:#fff;border-radius:18px;border:2px solid #ff9d9d;box-shadow:0 24px 80px rgba(0,0,0,.24);padding:20px;text-align:left}
+  #workspace-lock-modal h2{margin:0 0 8px;color:#8a1111;font-size:19px;letter-spacing:.02em}
+  #workspace-lock-modal p{margin:0 0 10px;color:#243b53;font-size:14px;line-height:1.35;font-weight:800}
+  #workspace-lock-modal .meta{background:#fff5f5;border:1px solid #ffd0d0;border-radius:12px;padding:8px;margin-top:8px;color:#8a1111;font-size:12px;font-weight:900}
+  #workspace-lock-modal button{margin-top:12px;border:0;border-radius:999px;padding:9px 16px;font-weight:900;background:#0aaed0;color:white;cursor:pointer}
 </style>
 <script id="hmi-polling-fallback">
 (function(){
@@ -79,7 +210,7 @@ HMI_POLLING_PATCH = r'''
     if (document.getElementById('workspace-lock-modal')) return;
     var m = document.createElement('div');
     m.id = 'workspace-lock-modal';
-    m.innerHTML = '<div class="box"><h2>TCP fora da área de trabalho</h2><p>O controle por joystick foi bloqueado. Use Drag Mode / Free Drive para recolocar manualmente o TCP dentro da área da mesa. Quando o TCP voltar para dentro, o controle será liberado automaticamente.</p><div id="workspace-lock-meta" class="meta"></div><button onclick="document.getElementById(\'workspace-lock-modal\').classList.remove(\'show\')">Entendi</button></div>';
+    m.innerHTML = '<div class="box"><h2>TCP fora da área</h2><p>Volte para dentro com o controle ou Free Drive.</p><div id="workspace-lock-meta" class="meta"></div><button onclick="document.getElementById(\'workspace-lock-modal\').classList.remove(\'show\')">Entendi</button></div>';
     document.body.appendChild(m);
   }
 
@@ -90,7 +221,7 @@ HMI_POLLING_PATCH = r'''
     var modal = document.getElementById('workspace-lock-modal');
     var meta = document.getElementById('workspace-lock-meta');
     if (locked) {
-      if (meta) meta.textContent = (status.message || 'TCP fora da área.') + ' Eixos: ' + ((status.outside_axes || []).join(', ') || 'fora dos limites');
+      if (meta) meta.textContent = 'Permitido: mover em direção à área. Eixos: ' + ((status.outside_axes || []).join(', ') || 'fora dos limites');
       if (!ultimoWorkspaceLocked && modal) modal.classList.add('show');
     } else if (modal) {
       modal.classList.remove('show');
@@ -102,7 +233,7 @@ HMI_POLLING_PATCH = r'''
     cfg = cfg || {};
     status = status || {};
     var limits = status.limits || null;
-    var txt = status.message || 'Workspace não configurado.';
+    var txt = status.jog_locked ? 'TCP fora da área. Mova de volta para dentro.' : (status.message || 'Workspace não configurado.');
     if (limits) {
       txt += '\nLargura P1–P2: ' + fmt(limits.edge_length_mm) + ' mm';
       txt += ' · Profundidade até base: ' + fmt(limits.depth_mm) + ' mm';
@@ -120,11 +251,6 @@ HMI_POLLING_PATCH = r'''
   function getWorkspaceLimits() {
     var ws = window.__paybackWorkspace;
     return ws && ws.status && ws.status.limits ? ws.status.limits : null;
-  }
-
-  function hasWorkspaceLimits() {
-    var l = getWorkspaceLimits();
-    return !!(l && Array.isArray(l.vertices_xy) && l.vertices_xy.length === 4);
   }
 
   function instalarWorkspaceTrajectoryPatch() {
@@ -163,7 +289,6 @@ HMI_POLLING_PATCH = r'''
       var h = rect.height || 520;
       var wsCenter = centerOfVertices(limits.vertices_xy);
       var pts = limits.vertices_xy.slice();
-      // Inclui o círculo real da base do robô no fit, com 160 mm de diâmetro.
       pts.push([0, 0], [ROBOT_RADIUS_MM, 0], [-ROBOT_RADIUS_MM, 0], [0, ROBOT_RADIUS_MM], [0, -ROBOT_RADIUS_MM]);
       var rot = pts.map(function(p){ return rotateAroundWorkspace(p, wsCenter); });
       var xs = rot.map(function(p){ return p[0]; });
@@ -174,23 +299,12 @@ HMI_POLLING_PATCH = r'''
       var worldW = Math.max(1, maxX - minX);
       var worldH = Math.max(1, maxY - minY);
       var scale = Math.max(0.02, Math.min((w - pad*2) / worldW, (h - pad*2) / worldH));
-      return {
-        limits: limits,
-        wsCenter: wsCenter,
-        scale: scale,
-        screenCenter: [w/2, h/2],
-        worldCenter: [(minX + maxX)/2, (minY + maxY)/2],
-        w: w,
-        h: h
-      };
+      return { limits: limits, wsCenter: wsCenter, scale: scale, screenCenter: [w/2, h/2], worldCenter: [(minX + maxX)/2, (minY + maxY)/2], w: w, h: h };
     }
 
     function worldToScreenXY(p, t) {
       var rp = rotateAroundWorkspace(p, t.wsCenter);
-      return {
-        x: t.screenCenter[0] + (rp[0] - t.worldCenter[0]) * t.scale,
-        y: t.screenCenter[1] - (rp[1] - t.worldCenter[1]) * t.scale
-      };
+      return { x: t.screenCenter[0] + (rp[0] - t.worldCenter[0]) * t.scale, y: t.screenCenter[1] - (rp[1] - t.worldCenter[1]) * t.scale };
     }
 
     projectPoseToCanvas = function(p) {
@@ -430,7 +544,7 @@ HMI_POLLING_PATCH = r'''
         <button class="btn btn-p workspace-full" onclick="salvarWorkspace()"><i class="fa-solid fa-check"></i> Aplicar workspace e habilitar limites</button>
         <button class="btn btn-o workspace-full" onclick="desabilitarWorkspace()"><i class="fa-solid fa-ban"></i> Desabilitar limites</button>
       </div>
-      <div class="param-help">P1 e P2 definem a borda distante da mesa. A base do robô (0,0) define a profundidade por projeção perpendicular. Z da superfície = menor Z entre P1 e P2. Se o TCP sair da área, o joystick é bloqueado e o retorno deve ser por Drag Mode / Free Drive.</div>`;
+      <div class="param-help">P1 e P2 definem a borda distante da mesa. A base do robô (0,0) define a profundidade por projeção perpendicular. Z da superfície = menor Z entre P1 e P2. Fora da área, o controle só aceita movimentos de retorno.</div>`;
     side.appendChild(card);
     carregarWorkspace();
   }
