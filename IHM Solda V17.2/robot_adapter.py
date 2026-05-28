@@ -6,9 +6,12 @@
 # não pode sobrescrever o TCP usado para salvar pontos, porque algumas fontes retornam
 # orientação em graus enquanto a SDK de movimento usa radianos.
 #
-# Workspace: dois pontos opostos da mesa definem o retângulo XY e a superfície Z.
-# Se o TCP estiver fora do workspace, TODO jog por controle é bloqueado. O retorno
-# deve ser feito por Drag Mode / Free Drive, como decisão operacional explícita.
+# Workspace: P1 e P2 definem a borda distante da mesa. A origem da base do robô
+# (0,0) define o lado próximo por projeção perpendicular nessa borda. Isso gera
+# um retângulo orientado, sem exigir mesmo X/Y, nem alinhamento com os eixos.
+# Z da superfície = menor Z entre P1 e P2.
+# Se o TCP estiver fora do workspace, TODO jog por controle é bloqueado; o retorno
+# deve ser feito por Drag Mode / Free Drive.
 
 from pathlib import Path
 import importlib.util
@@ -153,36 +156,119 @@ def _pose3_from_any(v) -> Optional[List[float]]:
     return None
 
 
-def _workspace_limits_from_cfg(cfg: Dict[str, Any]) -> Optional[Dict[str, float]]:
+def _dot2(a, b):
+    return float(a[0]) * float(b[0]) + float(a[1]) * float(b[1])
+
+
+def _sub2(a, b):
+    return [float(a[0]) - float(b[0]), float(a[1]) - float(b[1])]
+
+
+def _add2(a, b):
+    return [float(a[0]) + float(b[0]), float(a[1]) + float(b[1])]
+
+
+def _mul2(a, s):
+    return [float(a[0]) * float(s), float(a[1]) * float(s)]
+
+
+def _norm2(a):
+    return math.hypot(float(a[0]), float(a[1]))
+
+
+def _workspace_limits_from_cfg(cfg: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     p1 = _pose3_from_any(cfg.get("p1"))
     p2 = _pose3_from_any(cfg.get("p2"))
     if p1 is None or p2 is None:
         return None
 
-    x_min = min(p1[0], p2[0])
-    x_max = max(p1[0], p2[0])
-    y_min = min(p1[1], p2[1])
-    y_max = max(p1[1], p2[1])
-    z_surface = (p1[2] + p2[2]) / 2.0
+    a = [p1[0], p1[1]]
+    b = [p2[0], p2[1]]
+    origin = [0.0, 0.0]
+    ab = _sub2(b, a)
+    edge_len = _norm2(ab)
+    if edge_len < 1e-6:
+        return None
+
+    u = [ab[0] / edge_len, ab[1] / edge_len]
+
+    # Projeção da base do robô na reta P1-P2. A profundidade da mesa é a distância
+    # perpendicular da origem até essa reta. Não há hipótese de alinhamento em X/Y.
+    ao = _sub2(origin, a)
+    s_origin = _dot2(ao, u)
+    q = _add2(a, _mul2(u, s_origin))
+    q_to_origin = _sub2(origin, q)
+    depth = _norm2(q_to_origin)
+    if depth < 1e-6:
+        return None
+
+    n = [q_to_origin[0] / depth, q_to_origin[1] / depth]
+    near_a = _add2(a, _mul2(n, depth))
+    near_b = _add2(b, _mul2(n, depth))
+
+    z_surface = min(float(p1[2]), float(p2[2]))
     z_margin = float(cfg.get("z_margin_mm", 10.0))
     xy_margin = float(cfg.get("xy_margin_mm", 5.0))
     slow_zone = max(1.0, float(cfg.get("slow_zone_mm", 30.0)))
 
+    verts = [a, b, near_b, near_a]
+    xs = [v[0] for v in verts]
+    ys = [v[1] for v in verts]
+
+    s_min_safe = xy_margin
+    s_max_safe = edge_len - xy_margin
+    t_min_safe = xy_margin
+    t_max_safe = depth - xy_margin
+
     return {
-        "x_min": x_min,
-        "x_max": x_max,
-        "y_min": y_min,
-        "y_max": y_max,
+        "mode": "oriented_from_far_edge_and_robot_base",
+        "p1_xy": a,
+        "p2_xy": b,
+        "origin_xy": origin,
+        "projection_origin_on_edge": q,
+        "near_p1_xy": near_a,
+        "near_p2_xy": near_b,
+        "vertices_xy": verts,
+        "u_edge": u,
+        "n_depth": n,
+        "edge_length_mm": edge_len,
+        "depth_mm": depth,
+        "s_origin_mm": s_origin,
+        "s_min": 0.0,
+        "s_max": edge_len,
+        "t_min": 0.0,
+        "t_max": depth,
+        "s_min_safe": s_min_safe,
+        "s_max_safe": s_max_safe,
+        "t_min_safe": t_min_safe,
+        "t_max_safe": t_max_safe,
+        "z_p1": float(p1[2]),
+        "z_p2": float(p2[2]),
+        "z_surface_source": "min_p1_p2",
         "z_surface": z_surface,
         "z_min_tcp": z_surface + z_margin,
-        "x_min_safe": x_min + xy_margin,
-        "x_max_safe": x_max - xy_margin,
-        "y_min_safe": y_min + xy_margin,
-        "y_max_safe": y_max - xy_margin,
         "xy_margin_mm": xy_margin,
         "z_margin_mm": z_margin,
         "slow_zone_mm": slow_zone,
+        # Compatibilidade visual para UI atual; é bounding box, não a regra principal.
+        "x_min": min(xs),
+        "x_max": max(xs),
+        "y_min": min(ys),
+        "y_max": max(ys),
+        "x_min_safe": min(xs) + xy_margin,
+        "x_max_safe": max(xs) - xy_margin,
+        "y_min_safe": min(ys) + xy_margin,
+        "y_max_safe": max(ys) - xy_margin,
     }
+
+
+def _workspace_coords_xy(limits: Dict[str, Any], x: float, y: float):
+    p = [float(x), float(y)]
+    a = limits["p1_xy"]
+    rel = _sub2(p, a)
+    s = _dot2(rel, limits["u_edge"])
+    t = _dot2(rel, limits["n_depth"])
+    return s, t
 
 
 def _workspace_status(self) -> Dict[str, Any]:
@@ -204,22 +290,25 @@ def _workspace_status(self) -> Dict[str, Any]:
     if limits is None:
         status["inside"] = False
         status["jog_locked"] = True
-        status["message"] = "Workspace habilitado, mas P1/P2 ainda não foram definidos."
+        status["message"] = "Workspace habilitado, mas P1/P2 não formam uma área geométrica válida."
         return status
 
     outside = []
     x, y, z = float(tcp[0]), float(tcp[1]), float(tcp[2])
-    if x < limits["x_min_safe"]:
-        outside.append("X-")
-    elif x > limits["x_max_safe"]:
-        outside.append("X+")
-    if y < limits["y_min_safe"]:
-        outside.append("Y-")
-    elif y > limits["y_max_safe"]:
-        outside.append("Y+")
+    s, t = _workspace_coords_xy(limits, x, y)
+
+    if s < limits["s_min_safe"]:
+        outside.append("S-")
+    elif s > limits["s_max_safe"]:
+        outside.append("S+")
+    if t < limits["t_min_safe"]:
+        outside.append("T-")
+    elif t > limits["t_max_safe"]:
+        outside.append("T+")
     if z < limits["z_min_tcp"]:
         outside.append("Z-")
 
+    status["workspace_coords"] = {"s_mm": s, "t_mm": t}
     status["outside_axes"] = outside
     status["inside"] = len(outside) == 0
     status["jog_locked"] = not status["inside"]
@@ -260,14 +349,8 @@ def _set_workspace_config(self, dados):
         elif key not in cfg:
             cfg[key] = default
 
-    p1 = _pose3_from_any(cfg.get("p1"))
-    p2 = _pose3_from_any(cfg.get("p2"))
-    if p1 and p2:
-        if abs(p1[2] - p2[2]) > 20.0:
-            raise ValueError("P1 e P2 têm diferença de Z maior que 20 mm. A mesa foi assumida horizontal.")
-        if abs(p1[0] - p2[0]) < 20.0 or abs(p1[1] - p2[1]) < 20.0:
-            raise ValueError("P1 e P2 precisam formar cantos opostos com diferença útil em X e Y.")
-
+    # Sem restrição de X/Y igual, diferente, proporção ou alinhamento.
+    # Só a geometria degenerada fica inválida: P1=P2 ou reta P1-P2 passando pela origem.
     with self._state_lock:
         self.workspace = cfg
         self.diagnosticos["workspace"] = self._workspace_status()
@@ -297,8 +380,6 @@ def _limitar_velocidade_workspace(self, eixo: int, vel: float) -> float:
 
     status = self._workspace_status()
     if status.get("jog_locked"):
-        # Política exigida: se está fora, não se volta pelo controle.
-        # Retorno para dentro deve ser por Drag Mode / Free Drive.
         if not getattr(self, "_workspace_stop_emitido", False):
             self.parar_grupo([0, 1, 2, 3, 4, 5])
             self._workspace_stop_emitido = True
@@ -319,61 +400,50 @@ def _limitar_velocidade_workspace(self, eixo: int, vel: float) -> float:
         return vel
 
     tcp = self._copy_tcp()
-    pos = float(tcp[eixo])
     vel = float(vel)
     if abs(vel) < 1e-9:
         return vel
 
+    if eixo == 2:
+        z = float(tcp[2])
+        lo = float(limits["z_min_tcp"])
+        slow = float(limits["slow_zone_mm"])
+        if vel < 0:
+            if z <= lo:
+                return 0.0
+            dist = z - lo
+            if dist < slow:
+                return vel * max(0.0, min(1.0, dist / slow))
+        return vel
+
+    # X/Y em retângulo orientado: calcula contribuição do movimento base-eixo
+    # nos eixos locais S (borda P1-P2) e T (profundidade até a base).
+    x, y = float(tcp[0]), float(tcp[1])
+    s, t = _workspace_coords_xy(limits, x, y)
     slow = float(limits["slow_zone_mm"])
+    move_vec = [vel, 0.0] if eixo == 0 else [0.0, vel]
+    ds = _dot2(move_vec, limits["u_edge"])
+    dt = _dot2(move_vec, limits["n_depth"])
+    factor = 1.0
 
-    def slow_factor(dist):
-        return max(0.0, min(1.0, dist / slow))
+    def apply_boundary(local_pos, local_vel, lo, hi, factor):
+        if local_vel < 0:
+            if local_pos <= lo:
+                return 0.0
+            dist = local_pos - lo
+            if dist < slow:
+                return min(factor, max(0.0, min(1.0, dist / slow)))
+        elif local_vel > 0:
+            if local_pos >= hi:
+                return 0.0
+            dist = hi - local_pos
+            if dist < slow:
+                return min(factor, max(0.0, min(1.0, dist / slow)))
+        return factor
 
-    original = vel
-    bloqueado = False
-
-    if eixo == 0:
-        lo, hi = limits["x_min_safe"], limits["x_max_safe"]
-        if vel < 0:
-            if pos <= lo:
-                vel = 0.0; bloqueado = True
-            elif pos - lo < slow:
-                vel *= slow_factor(pos - lo)
-        elif vel > 0:
-            if pos >= hi:
-                vel = 0.0; bloqueado = True
-            elif hi - pos < slow:
-                vel *= slow_factor(hi - pos)
-    elif eixo == 1:
-        lo, hi = limits["y_min_safe"], limits["y_max_safe"]
-        if vel < 0:
-            if pos <= lo:
-                vel = 0.0; bloqueado = True
-            elif pos - lo < slow:
-                vel *= slow_factor(pos - lo)
-        elif vel > 0:
-            if pos >= hi:
-                vel = 0.0; bloqueado = True
-            elif hi - pos < slow:
-                vel *= slow_factor(hi - pos)
-    elif eixo == 2:
-        lo = limits["z_min_tcp"]
-        if vel < 0:
-            if pos <= lo:
-                vel = 0.0; bloqueado = True
-            elif pos - lo < slow:
-                vel *= slow_factor(pos - lo)
-
-    if bloqueado:
-        with self._state_lock:
-            self.diagnosticos["workspace_bloqueio"] = {
-                "motivo": "limite interno atingido",
-                "eixo": int(eixo),
-                "vel_original": original,
-                "pos": pos,
-                "ts": time.time(),
-            }
-    return vel
+    factor = apply_boundary(s, ds, limits["s_min_safe"], limits["s_max_safe"], factor)
+    factor = apply_boundary(t, dt, limits["t_min_safe"], limits["t_max_safe"], factor)
+    return vel * factor
 
 
 # ---------------------------------------------------------------------------
