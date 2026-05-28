@@ -1,17 +1,11 @@
-# robot_adapter.py — wrapper V17.2 com correções de TCP, unidade e workspace.
+# robot_adapter.py — wrapper V17.2 com correções de TCP, workspace e segurança de trajetória.
 #
-# Este arquivo carrega o adapter histórico da pasta de solda e aplica patches
-# pequenos para garantir que, em robô real, o TCP lido pela SDK seja publicado
-# continuamente para a página. Também corrige uma falha crítica: telemetria/diagnóstico
-# não pode sobrescrever o TCP usado para salvar pontos, porque algumas fontes retornam
-# orientação em graus enquanto a SDK de movimento usa radianos.
-#
-# Workspace: P1 e P2 definem a borda distante da mesa. A origem da base do robô
-# (0,0) define o lado próximo por projeção perpendicular nessa borda. Isso gera
-# um retângulo orientado, sem exigir mesmo X/Y, nem alinhamento com os eixos.
-# Z da superfície = menor Z entre P1 e P2. Z limite TCP = superfície + margem Z.
-# Se o TCP estiver fora do workspace, TODO jog por controle é bloqueado; o retorno
-# deve ser feito por Drag Mode / Free Drive.
+# Carrega o adapter histórico da pasta de solda e aplica patches locais para:
+# - publicar TCP real continuamente;
+# - impedir telemetria/diagnóstico de sobrescrever o TCP oficial usado em pontos;
+# - limitar jog ao workspace;
+# - bloquear joystick durante execução de trajetória;
+# - desligar a saída digital de solda fora do estado de trajetória.
 
 from pathlib import Path
 import importlib.util
@@ -191,7 +185,6 @@ def _workspace_limits_from_cfg(cfg: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         return None
 
     u = [ab[0] / edge_len, ab[1] / edge_len]
-
     ao = _sub2(origin, a)
     s_origin = _dot2(ao, u)
     q = _add2(a, _mul2(u, s_origin))
@@ -282,7 +275,7 @@ def _workspace_status(self) -> Dict[str, Any]:
         "limits": limits,
     }
     if not status["enabled"]:
-        status["message"] = "Workspace desabilitado. Marque 'Habilitar limites da mesa' para bloquear o jog."
+        status["message"] = "Workspace desabilitado."
         return status
     if limits is None:
         status["inside"] = False
@@ -312,7 +305,7 @@ def _workspace_status(self) -> Dict[str, Any]:
     status["message"] = (
         "TCP dentro da área de trabalho."
         if status["inside"] else
-        "TCP fora da área de trabalho. Controle bloqueado. Use Drag Mode / Free Drive para recolocar o TCP dentro da área da mesa."
+        "TCP fora da área de trabalho. Controle aceita apenas movimento de retorno."
     )
     return status
 
@@ -386,8 +379,6 @@ def _limitar_velocidade_workspace(self, eixo: int, vel: float) -> float:
     if not cfg.get("enabled"):
         return vel
 
-    # Lê TCP real imediatamente antes de validar limite. Sem isso, o limite pode usar
-    # uma amostra velha e deixar o robô passar da superfície.
     try:
         self._refresh_tcp_from_robot("workspace_limit")
     except Exception:
@@ -399,7 +390,7 @@ def _limitar_velocidade_workspace(self, eixo: int, vel: float) -> float:
 
     status = self._workspace_status()
     if status.get("jog_locked"):
-        return self._bloquear_jog_workspace("TCP fora da área; retorno apenas por Drag Mode / Free Drive", eixo, vel)
+        return self._bloquear_jog_workspace("TCP fora da área; movimento não autorizado", eixo, vel)
 
     self._workspace_stop_emitido = False
 
@@ -534,20 +525,201 @@ def _amostrar_tcp_estavel_para_ponto(self) -> bool:
     return True
 
 
+# ---------------------------------------------------------------------------
+# Segurança de trajetória / status do robô
+# ---------------------------------------------------------------------------
+
+def _parse_bool(v):
+    try:
+        if v is None:
+            return None
+        return bool(int(v))
+    except Exception:
+        return bool(v)
+
+
+def _robot_status_updates(self) -> Dict[str, Any]:
+    if getattr(self, "modo_simulacao", True):
+        return {}
+    try:
+        if not self.driver.has_robot():
+            return {"driver_sem_robo": True}
+    except Exception:
+        return {"driver_sem_robo": True}
+
+    try:
+        raw = self.driver.get_robot_status()
+        updates, debug = _REAL_MOD.TelemetryParser.parse_robot_status(raw)
+        self._apply_telemetry_updates(dict(updates), debug)
+        with self._state_lock:
+            self.diagnosticos["robot_status_raw_preview"] = repr(raw)[:500]
+        return dict(updates or {})
+    except Exception as e:
+        with self._state_lock:
+            self.diagnosticos["robot_status_probe_error"] = str(e)
+        return {}
+
+
+def _robot_fault_reasons_from_diag(self) -> List[str]:
+    with self._state_lock:
+        d = copy.deepcopy(self.diagnosticos)
+
+    reasons = []
+    code = d.get("codigo_erro", 0)
+    try:
+        if int(code) != 0:
+            reasons.append(f"codigo_erro={code}")
+    except Exception:
+        if code not in (None, "", 0, "0"):
+            reasons.append(f"codigo_erro={code}")
+
+    for key, label in (
+        ("status_emergencia", "emergência"),
+        ("protective_stop", "protective_stop"),
+        ("driver_sem_robo", "driver_sem_robo"),
+    ):
+        if _parse_bool(d.get(key)) is True:
+            reasons.append(label)
+
+    # Durante uma trajetória, power_on/enabled falsos são estado anormal.
+    for key in ("power_on", "enabled"):
+        val = d.get(key)
+        if val is not None and _parse_bool(val) is False:
+            reasons.append(f"{key}=false")
+
+    return reasons
+
+
+def _probe_robot_fault(self) -> List[str]:
+    updates = self._robot_status_updates()
+    if updates:
+        with self._state_lock:
+            self.diagnosticos.update(updates)
+    return self._robot_fault_reasons_from_diag()
+
+
+def _marcar_interrupcao_trajetoria(self, motivo: str, reasons=None) -> None:
+    reasons = [str(x) for x in (reasons or [])]
+    with self._state_lock:
+        self.diagnosticos["trajetoria_interrompida"] = True
+        self.diagnosticos["trajetoria_interrupcao_motivo"] = motivo
+        self.diagnosticos["trajetoria_interrupcao_reasons"] = reasons
+        self.diagnosticos["trajetoria_interrupcao_ts"] = time.time()
+    try:
+        self.set_saida_digital(False, confirmar=False)
+    except Exception as e:
+        with self._state_lock:
+            self.diagnosticos["falha_desligando_solda_em_interrupcao"] = str(e)
+
+
+def _consumir_botoes_joystick(self, joy) -> None:
+    for b in (4, 5, 6, 7, 8, 15):
+        try:
+            self.last_btns[b] = joy.get_button(b)
+        except Exception:
+            pass
+
+
+def _bloquear_joystick_por_trajetoria(self, joy=None) -> None:
+    self.grupo_ativo = None
+    if not getattr(self, "_traj_joystick_stop_emitido", False):
+        self.parar_grupo([0, 1, 2, 3, 4, 5])
+        self._traj_joystick_stop_emitido = True
+        print("[SEGURANÇA] Joystick bloqueado durante execução de trajetória.")
+    with self._state_lock:
+        self.diagnosticos["joystick_bloqueado_por_trajetoria"] = True
+        self.diagnosticos["joystick_bloqueio_ts"] = time.time()
+    if joy is not None:
+        self._consumir_botoes_joystick(joy)
+
+
+def _patched_aguardar_chegada_por_tcp(self, alvo, tol_mm=2.0, timeout_s=120.0, ciclos_estaveis=5, exigir_inpos=False) -> bool:
+    if self.modo_simulacao:
+        return True
+
+    t0 = time.time()
+    stable = 0
+    last = None
+    stopped_since = None
+    stopped_delta_mm = 0.08
+    stopped_timeout_s = 5.0
+
+    while time.time() - t0 < timeout_s:
+        try:
+            self._refresh_tcp_from_robot("traj_wait")
+        except Exception:
+            pass
+
+        fault_reasons = self._probe_robot_fault()
+        if fault_reasons:
+            self._marcar_interrupcao_trajetoria("status de falha/parada do robô durante trajetória", fault_reasons)
+            return False
+
+        atual = self._copy_tcp()
+        dist = self._dist_xyz(atual, alvo)
+        delta = self._dist_xyz(atual, last) if last is not None else 999999.0
+        last = atual
+
+        inpos_ok = True
+        if exigir_inpos:
+            inpos = self._is_in_pos()
+            inpos_ok = True if inpos is None else bool(inpos)
+
+        if dist <= tol_mm and delta <= 0.35 and inpos_ok:
+            stable += 1
+            if stable >= ciclos_estaveis:
+                return True
+        else:
+            stable = 0
+
+        if dist > tol_mm and delta <= stopped_delta_mm:
+            if stopped_since is None:
+                stopped_since = time.time()
+            elif time.time() - stopped_since >= stopped_timeout_s:
+                self._marcar_interrupcao_trajetoria(
+                    f"robô parado fora do alvo por {stopped_timeout_s:.1f}s",
+                    [f"dist_alvo={dist:.2f}mm", f"delta={delta:.3f}mm"],
+                )
+                return False
+        else:
+            stopped_since = None
+
+        time.sleep(0.03)
+
+    self._marcar_interrupcao_trajetoria("timeout aguardando chegada ao último ponto", [f"timeout={timeout_s}s"])
+    return False
+
+
+# ---------------------------------------------------------------------------
+# Patches sobre adapter histórico
+# ---------------------------------------------------------------------------
+
 _original_conectar = adapter.conectar
 _original_salvar_ponto_atual = adapter.salvar_ponto_atual
 _original_update_telemetry_low_freq = adapter._update_telemetry_low_freq
 _original_apply_telemetry_updates = adapter._apply_telemetry_updates
 _original_snapshot_state = adapter.snapshot_state
 _original_enviar_jog = adapter.enviar_jog
+_original_processar_joystick = adapter._processar_joystick
+_original_aguardar_chegada_por_tcp = adapter.aguardar_chegada_por_tcp
+_original_set_saida_digital = adapter.set_saida_digital
+_original_executar_trajetoria = adapter.executar_trajetoria
 
 adapter.workspace = _workspace_default()
 adapter._workspace_stop_emitido = False
+adapter._traj_joystick_stop_emitido = False
 
 
 def _patched_snapshot_state(self):
     dados = _original_snapshot_state()
     dados["workspace"] = self.get_workspace_config()
+    dados["trajectory_safety"] = {
+        "executando_trajetoria": bool(getattr(self, "executando_trajetoria", False)),
+        "joystick_bloqueado_por_trajetoria": bool(self.diagnosticos.get("joystick_bloqueado_por_trajetoria", False)),
+        "trajetoria_interrompida": bool(self.diagnosticos.get("trajetoria_interrompida", False)),
+        "trajetoria_interrupcao_motivo": self.diagnosticos.get("trajetoria_interrupcao_motivo", ""),
+        "solda_saida_digital_ativa": bool(getattr(self, "saida_digital_ativa", False)),
+    }
     return dados
 
 
@@ -571,12 +743,35 @@ def _patched_conectar(self, ip="192.168.0.200"):
             if self._refresh_tcp_from_robot("connect", aplicar_filtro=False):
                 break
             time.sleep(0.08)
+        self._probe_robot_fault()
         if self.on_state_update:
             self.on_state_update(self.snapshot_state())
     return ok
 
 
+def _patched_set_saida_digital(self, ativo: bool, confirmar=False, timeout_s=2.0) -> bool:
+    ativo = bool(ativo)
+    if ativo and not getattr(self, "executando_trajetoria", False):
+        with self._state_lock:
+            self.diagnosticos["solda_bloqueada_fora_de_trajetoria"] = True
+            self.diagnosticos["solda_bloqueio_ts"] = time.time()
+        print("[SEGURANÇA] Saída digital de solda bloqueada fora de trajetória.")
+        return False
+
+    ok = _original_set_saida_digital(ativo, confirmar=confirmar, timeout_s=timeout_s)
+    if not ativo:
+        with self._state_lock:
+            self.diagnosticos["solda_bloqueada_fora_de_trajetoria"] = False
+    return ok
+
+
 def _patched_salvar_ponto_atual(self, tipo):
+    if getattr(self, "executando_trajetoria", False):
+        with self._state_lock:
+            self.diagnosticos["ponto_bloqueado_por_trajetoria"] = True
+            self.diagnosticos["ponto_bloqueio_ts"] = time.time()
+        print("[SEGURANÇA] Marcação de ponto bloqueada durante trajetória.")
+        return False
     self._amostrar_tcp_estavel_para_ponto()
     return _original_salvar_ponto_atual(tipo)
 
@@ -584,14 +779,62 @@ def _patched_salvar_ponto_atual(self, tipo):
 def _patched_update_telemetry_low_freq(self):
     self._refresh_tcp_from_robot("low_freq")
     result = _original_update_telemetry_low_freq()
+
+    try:
+        fault_reasons = self._probe_robot_fault() if getattr(self, "executando_trajetoria", False) else []
+        if fault_reasons and getattr(self, "saida_digital_ativa", False):
+            self._marcar_interrupcao_trajetoria("status de falha/parada do robô", fault_reasons)
+        if (not getattr(self, "executando_trajetoria", False)) and getattr(self, "saida_digital_ativa", False):
+            self.set_saida_digital(False, confirmar=False)
+    except Exception as e:
+        with self._state_lock:
+            self.diagnosticos["trajectory_safety_update_error"] = str(e)
+
     with self._state_lock:
         self.diagnosticos["workspace"] = self._workspace_status()
     return result
 
 
 def _patched_enviar_jog(self, eixo, vel, coord):
+    if getattr(self, "executando_trajetoria", False):
+        self._bloquear_joystick_por_trajetoria()
+        return None
+    self._traj_joystick_stop_emitido = False
+    with self._state_lock:
+        self.diagnosticos["joystick_bloqueado_por_trajetoria"] = False
     vel_filtrada = self._limitar_velocidade_workspace(int(eixo), float(vel))
     return _original_enviar_jog(eixo, vel_filtrada, coord)
+
+
+def _patched_processar_joystick(self, joy):
+    if getattr(self, "executando_trajetoria", False):
+        self._bloquear_joystick_por_trajetoria(joy)
+        return
+    self._traj_joystick_stop_emitido = False
+    with self._state_lock:
+        self.diagnosticos["joystick_bloqueado_por_trajetoria"] = False
+    return _original_processar_joystick(joy)
+
+
+def _patched_executar_trajetoria(self) -> str:
+    with self._state_lock:
+        self.diagnosticos["trajetoria_interrompida"] = False
+        self.diagnosticos["trajetoria_interrupcao_motivo"] = ""
+        self.diagnosticos["trajetoria_interrupcao_reasons"] = []
+        self.diagnosticos["joystick_bloqueado_por_trajetoria"] = False
+        self.diagnosticos["solda_bloqueada_fora_de_trajetoria"] = False
+    try:
+        return _original_executar_trajetoria()
+    finally:
+        try:
+            if getattr(self, "saida_digital_ativa", False):
+                self.set_saida_digital(False, confirmar=False)
+        except Exception as e:
+            with self._state_lock:
+                self.diagnosticos["falha_desligando_solda_finalmente"] = str(e)
+        self._traj_joystick_stop_emitido = False
+        with self._state_lock:
+            self.diagnosticos["joystick_bloqueado_por_trajetoria"] = False
 
 
 def _patched_iniciar_loop_controle(self):
@@ -657,10 +900,20 @@ adapter.get_workspace_config = MethodType(_get_workspace_config, adapter)
 adapter.set_workspace_config = MethodType(_set_workspace_config, adapter)
 adapter.set_workspace_point_from_tcp = MethodType(_set_workspace_point_from_tcp, adapter)
 adapter._limitar_velocidade_workspace = MethodType(_limitar_velocidade_workspace, adapter)
+adapter._robot_status_updates = MethodType(_robot_status_updates, adapter)
+adapter._robot_fault_reasons_from_diag = MethodType(_robot_fault_reasons_from_diag, adapter)
+adapter._probe_robot_fault = MethodType(_probe_robot_fault, adapter)
+adapter._marcar_interrupcao_trajetoria = MethodType(_marcar_interrupcao_trajetoria, adapter)
+adapter._consumir_botoes_joystick = MethodType(_consumir_botoes_joystick, adapter)
+adapter._bloquear_joystick_por_trajetoria = MethodType(_bloquear_joystick_por_trajetoria, adapter)
 adapter.snapshot_state = MethodType(_patched_snapshot_state, adapter)
 adapter._apply_telemetry_updates = MethodType(_patched_apply_telemetry_updates, adapter)
 adapter.conectar = MethodType(_patched_conectar, adapter)
+adapter.set_saida_digital = MethodType(_patched_set_saida_digital, adapter)
 adapter.salvar_ponto_atual = MethodType(_patched_salvar_ponto_atual, adapter)
+adapter.aguardar_chegada_por_tcp = MethodType(_patched_aguardar_chegada_por_tcp, adapter)
+adapter.executar_trajetoria = MethodType(_patched_executar_trajetoria, adapter)
 adapter._update_telemetry_low_freq = MethodType(_patched_update_telemetry_low_freq, adapter)
 adapter.enviar_jog = MethodType(_patched_enviar_jog, adapter)
+adapter._processar_joystick = MethodType(_patched_processar_joystick, adapter)
 adapter.iniciar_loop_controle = MethodType(_patched_iniciar_loop_controle, adapter)
