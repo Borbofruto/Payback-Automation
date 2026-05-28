@@ -1,12 +1,12 @@
 # robot_adapter.py — wrapper V17.2 com TCP, workspace e segurança de trajetória.
 #
-# Este wrapper carrega o adapter histórico da solda e aplica patches locais:
+# Carrega o adapter histórico da solda e aplica patches locais:
 # - TCP real publicado continuamente;
 # - telemetria não sobrescreve o TCP oficial usado para salvar pontos;
 # - workspace orientado por P1/P2 + base do robô;
-# - joystick bloqueado durante trajetória;
+# - joystick é ignorado durante trajetória SEM mandar jog_stop/parar_grupo;
 # - saída digital de solda só liga durante trajetória;
-# - trajetória NÃO aborta por "robô parado". Parada pode ser pausa legítima.
+# - trajetória NÃO aborta por "robô parado". Parada pode ser etapa legítima de processo.
 
 from pathlib import Path
 import importlib.util
@@ -580,9 +580,6 @@ def _robot_fault_reasons_from_diag(self) -> List[str]:
         if _parse_bool(d.get(key)) is True:
             reasons.append(label)
 
-    # Deliberadamente NÃO aborta por power_on/enabled falso: esses campos podem ser
-    # interpretados de forma diferente pelo parser/SDK. Se forem problema real, tendem
-    # a vir acompanhados de código de erro/protective stop/status de emergência.
     return reasons
 
 
@@ -618,11 +615,12 @@ def _consumir_botoes_joystick(self, joy) -> None:
 
 
 def _bloquear_joystick_por_trajetoria(self, joy=None) -> None:
+    # Ponto crítico: durante trajetória o joystick deve ser IGNORADO, não deve mandar
+    # jog_stop/parar_grupo. Jog_stop para o movimento do robô e mata o MoveL/MoveC.
     self.grupo_ativo = None
-    if not getattr(self, "_traj_joystick_stop_emitido", False):
-        self.parar_grupo([0, 1, 2, 3, 4, 5])
-        self._traj_joystick_stop_emitido = True
-        print("[SEGURANÇA] Joystick bloqueado durante execução de trajetória.")
+    if not getattr(self, "_traj_joystick_block_log_emitido", False):
+        self._traj_joystick_block_log_emitido = True
+        print("[SEGURANÇA] Joystick ignorado durante execução de trajetória.")
     with self._state_lock:
         self.diagnosticos["joystick_bloqueado_por_trajetoria"] = True
         self.diagnosticos["joystick_bloqueio_ts"] = time.time()
@@ -693,7 +691,7 @@ _original_executar_trajetoria = adapter.executar_trajetoria
 
 adapter.workspace = _workspace_default()
 adapter._workspace_stop_emitido = False
-adapter._traj_joystick_stop_emitido = False
+adapter._traj_joystick_block_log_emitido = False
 
 
 def _patched_snapshot_state(self):
@@ -785,7 +783,7 @@ def _patched_enviar_jog(self, eixo, vel, coord):
     if getattr(self, "executando_trajetoria", False):
         self._bloquear_joystick_por_trajetoria()
         return None
-    self._traj_joystick_stop_emitido = False
+    self._traj_joystick_block_log_emitido = False
     with self._state_lock:
         self.diagnosticos["joystick_bloqueado_por_trajetoria"] = False
     vel_filtrada = self._limitar_velocidade_workspace(int(eixo), float(vel))
@@ -796,7 +794,7 @@ def _patched_processar_joystick(self, joy):
     if getattr(self, "executando_trajetoria", False):
         self._bloquear_joystick_por_trajetoria(joy)
         return
-    self._traj_joystick_stop_emitido = False
+    self._traj_joystick_block_log_emitido = False
     with self._state_lock:
         self.diagnosticos["joystick_bloqueado_por_trajetoria"] = False
     return _original_processar_joystick(joy)
@@ -809,6 +807,16 @@ def _patched_executar_trajetoria(self) -> str:
         self.diagnosticos["trajetoria_interrupcao_reasons"] = []
         self.diagnosticos["joystick_bloqueado_por_trajetoria"] = False
         self.diagnosticos["solda_bloqueada_fora_de_trajetoria"] = False
+
+    # Para somente jog manual pendente ANTES de começar a trajetória.
+    # Depois que a trajetória começou, o joystick é ignorado sem mandar stop.
+    try:
+        if getattr(self, "grupo_ativo", None) is not None:
+            self.parar_grupo([0, 1, 2, 3, 4, 5])
+            self.grupo_ativo = None
+    except Exception:
+        pass
+
     try:
         return _original_executar_trajetoria()
     finally:
@@ -818,7 +826,7 @@ def _patched_executar_trajetoria(self) -> str:
         except Exception as e:
             with self._state_lock:
                 self.diagnosticos["falha_desligando_solda_finalmente"] = str(e)
-        self._traj_joystick_stop_emitido = False
+        self._traj_joystick_block_log_emitido = False
         with self._state_lock:
             self.diagnosticos["joystick_bloqueado_por_trajetoria"] = False
 
