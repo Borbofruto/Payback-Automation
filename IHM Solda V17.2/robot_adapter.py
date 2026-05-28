@@ -1,951 +1,218 @@
-# robot_adapter.py
-# Adapter de alto nível da IHM de Solda Payback — V17.2.
-# Cola driver JAKA, planner de trajetória, telemetria e joystick.
+# robot_adapter.py — wrapper V17.2 com correção de sincronismo TCP/IHM.
+#
+# Este arquivo carrega o adapter histórico da pasta de solda e aplica patches
+# pequenos para garantir que, em robô real, o TCP lido pela SDK seja publicado
+# continuamente para a página via Socket.IO.
 
-import copy
-import json
-import math
-import random
-import socket
-import threading
+from pathlib import Path
+import importlib.util
+import sys
 import time
-from typing import Any, Dict, List, Optional
+import threading
+from types import MethodType
+from typing import Any, Optional, List
 
-import pygame
+_REAL_DIR = Path(__file__).resolve().parents[1] / "Programas de Robôs" / "JAKA" / "Solda"
+_REAL_FILE = _REAL_DIR / "robot_adapter.py"
 
-from jaka_driver import JakaDriver
-from models import SegmentKind
-from telemetry_parser import TelemetryParser
-from trajectory_planner import TrajectoryPlanner
+# Garante que os imports do adapter real resolvam para os módulos reais
+# daquele diretório, não para os proxies desta pasta.
+if str(_REAL_DIR) not in sys.path:
+    sys.path.insert(0, str(_REAL_DIR))
+
+_SPEC = importlib.util.spec_from_file_location("_payback_real_robot_adapter_v17_2", _REAL_FILE)
+_REAL_MOD = importlib.util.module_from_spec(_SPEC)
+sys.modules["_payback_real_robot_adapter_v17_2"] = _REAL_MOD
+_SPEC.loader.exec_module(_REAL_MOD)
+
+RobotAdapter = _REAL_MOD.RobotAdapter
+adapter = _REAL_MOD.adapter
 
 
-class RobotAdapter:
-    def __init__(self):
-        self.driver = JakaDriver()
-        self.modo_simulacao = not self.driver.sdk_available()
-        self.ip_atual: Optional[str] = None
-
-        # Parâmetros de controle
-        self.MAX_SPD_LINEAR = 120.0
-        self.MAX_SPD_ROTAT = 6.0
-        self.DEADZONE = 0.2
-        self.vel_reproducao = 15.0
-        self.vel_aproximacao = 150.0
-        self.clearance_z_mm = 50.0
-        self.controle_manual_pausado = False
-        self._pause_stop_emitido = False
-        # Pequena folga entre comandos não bloqueantes para evitar perda/reordenação
-        # observada em trajetórias mistas no controlador. Não é delay de execução; é
-        # intervalo de envio de comando para a fila do controlador.
-        self.command_gap_s = 0.04
-
-        # Estado
-        self._state_lock = threading.RLock()
-        self._exec_lock = threading.Lock()
-        self.posicao_atual_tcp = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
-        self.lista_pontos = []
-        self.executando_trajetoria = False
-        self.trajetoria_em_erro = False
-        self.trajetoria_erros = []
-        self._erro_joystick_stop_emitido = False
-        self.saida_digital_ativa = False
-        self.angulo_operador = 0.0
-        self.grupo_ativo = None
-        self.last_sent_vels = {0: 0.0, 1: 0.0, 2: 0.0, 3: 0.0, 4: 0.0, 5: 0.0}
-        self.last_btns = {4: 0, 5: 0, 6: 0, 7: 0, 8: 0, 15: 0}
-        self.b5_press_time = None
-        self.b5_triggered_long_press = False
-
-        # Telemetria
-        self.tempo_inicio_sistema = time.time()
-        self.diagnosticos = TelemetryParser.default_diagnostics()
-        self._last_telemetry_debug: Dict[str, Any] = {}
-        self._contador_telemetria = 0
-        self._tcp10000_stop = threading.Event()
-        self._tcp10000_thread = None
-
-        # Callbacks Socket.IO preenchidos pelo app.py
-        self.on_state_update = None
-        self.on_point_saved = None
-        self.on_execution_status = None
-        self.on_trajectory_error = None
-
-        if self.modo_simulacao:
-            print(f"[AVISO] SDK JAKA não carregado ({self.driver.sdk_error()}). Modo simulação ativo.")
-
-    # ------------------------------------------------------------------
-    # Estado público seguro
-    # ------------------------------------------------------------------
-    def sdk_carregado(self) -> bool:
-        return self.driver.sdk_available()
-
-    def _copy_tcp(self) -> List[float]:
-        with self._state_lock:
-            return list(self.posicao_atual_tcp)
-
-    def _set_tcp(self, pose) -> None:
-        with self._state_lock:
-            self.posicao_atual_tcp = [float(x) for x in pose[:6]]
-
-    def _get_pontos_snapshot(self):
-        with self._state_lock:
-            return copy.deepcopy(self.lista_pontos)
-
-    def _set_pontos(self, pontos) -> None:
-        with self._state_lock:
-            self.lista_pontos = copy.deepcopy(pontos)
-        self._emit_pontos()
-    def limpar_pontos(self) -> None:
-        # Limpar trajetória também libera erro de trajetória pendente; caso contrário
-        # o joystick ficava bloqueado mesmo sem pontos para corrigir.
-        with self._state_lock:
-            self.lista_pontos = []
-        self.limpar_erro_trajetoria()
-        self._emit_pontos()
-
-    def remover_ultimo_ponto(self) -> bool:
-        with self._state_lock:
-            if not self.lista_pontos:
-                return False
-            self.lista_pontos.pop()
-        # Remover ponto é uma ação de correção; libera erro pendente para permitir nova marcação.
-        self.limpar_erro_trajetoria()
-        self._emit_pontos()
+def _is_number(v: Any) -> bool:
+    try:
+        float(v)
         return True
-
-    def _emit_pontos(self) -> None:
-        if self.on_point_saved:
-            self.on_point_saved(self._get_pontos_snapshot())
-
-    def _emit_exec_status(self, message: str, status: str = "info") -> None:
-        if self.on_execution_status:
-            self.on_execution_status({"message": message, "status": status})
-
-    def definir_erro_trajetoria(self, errors) -> None:
-        """Bloqueia movimento manual por joystick até reconhecimento do operador."""
-        if isinstance(errors, str):
-            errors = [errors]
-        errors = [str(e) for e in (errors or ["Erro de trajetória não especificado."])]
-        with self._state_lock:
-            self.trajetoria_em_erro = True
-            self.trajetoria_erros = errors
-            self.diagnosticos["trajetoria_em_erro"] = True
-            self.diagnosticos["trajetoria_erros"] = list(errors)
-        # Para todos os eixos uma única vez ao entrar em erro.
-        # Não ficar chamando jog_stop a cada ciclo; isso travava o controle em algumas versões.
-        self.parar_grupo([0, 1, 2, 3, 4, 5])
-        self.grupo_ativo = None
-        self._erro_joystick_stop_emitido = True
-        if self.on_trajectory_error:
-            self.on_trajectory_error({
-                "status": "trajectory_error",
-                "message": errors[0] if errors else "Trajetória inválida.",
-                "errors": list(errors),
-            })
-
-    def limpar_erro_trajetoria(self) -> None:
-        with self._state_lock:
-            self.trajetoria_em_erro = False
-            self.trajetoria_erros = []
-            self.diagnosticos["trajetoria_em_erro"] = False
-            self.diagnosticos["trajetoria_erros"] = []
-        self._erro_joystick_stop_emitido = False
-
-    def obter_erros_trajetoria(self):
-        with self._state_lock:
-            return list(self.trajetoria_erros)
-
-    def get_parametros_operacionais(self) -> Dict[str, Any]:
-        with self._state_lock:
-            return {
-                "clearance_z_mm": float(self.clearance_z_mm),
-                "jog_linear_mm_s": float(self.MAX_SPD_LINEAR),
-                "jog_rot_rad_s": float(self.MAX_SPD_ROTAT),
-                "controle_manual_pausado": bool(self.controle_manual_pausado),
-            }
-
-    def set_parametros_operacionais(self, dados: Dict[str, Any]) -> Dict[str, Any]:
-        """Atualiza parâmetros editáveis da tela Parâmetros.
-
-        Não altera trajetória já em execução. Para evitar troca de velocidade enquanto
-        o operador segura o controle, a IHM deve pausar o controle antes de chamar este
-        método. Mesmo assim, o backend força pausa durante a escrita.
-        """
-        self.pausar_controle_manual("editando parâmetros operacionais")
-        try:
-            if "clearance_z_mm" in dados:
-                v = float(dados["clearance_z_mm"])
-                if not (0.0 <= v <= 500.0):
-                    raise ValueError("Clearance Z deve estar entre 0 e 500 mm.")
-                self.clearance_z_mm = v
-            if "jog_linear_mm_s" in dados:
-                v = float(dados["jog_linear_mm_s"])
-                if not (1.0 <= v <= 500.0):
-                    raise ValueError("Velocidade jog linear deve estar entre 1 e 500 mm/s.")
-                self.MAX_SPD_LINEAR = v
-            if "jog_rot_rad_s" in dados:
-                v = float(dados["jog_rot_rad_s"])
-                if not (0.05 <= v <= 20.0):
-                    raise ValueError("Velocidade jog rotacional deve estar entre 0.05 e 20 rad/s.")
-                self.MAX_SPD_ROTAT = v
-        finally:
-            # Não libera automaticamente: a IHM libera explicitamente ao sair do modo edição.
-            pass
-        return self.get_parametros_operacionais()
-
-    def pausar_controle_manual(self, motivo: str = "pausa manual") -> Dict[str, Any]:
-        with self._state_lock:
-            self.controle_manual_pausado = True
-            self.diagnosticos["controle_manual_pausado"] = True
-            self.diagnosticos["controle_manual_pausa_motivo"] = motivo
-        self.parar_grupo([0, 1, 2, 3, 4, 5])
-        self.grupo_ativo = None
-        self._pause_stop_emitido = True
-        return self.get_parametros_operacionais()
-
-    def retomar_controle_manual(self) -> Dict[str, Any]:
-        with self._state_lock:
-            self.controle_manual_pausado = False
-            self.diagnosticos["controle_manual_pausado"] = False
-            self.diagnosticos["controle_manual_pausa_motivo"] = ""
-        self._pause_stop_emitido = False
-        return self.get_parametros_operacionais()
-
-    def snapshot_state(self) -> Dict[str, Any]:
-        return {
-            "tcp": self._copy_tcp(),
-            "pontos": self._get_pontos_snapshot(),
-            "modo_sim": self.modo_simulacao,
-            "angulo_operador": math.degrees(self.angulo_operador),
-            "diagnosticos": copy.deepcopy(self.diagnosticos),
-            "trajetoria_em_erro": self.trajetoria_em_erro,
-            "trajetoria_erros": list(self.trajetoria_erros),
-            "controle_manual_pausado": bool(self.controle_manual_pausado),
-            "parametros": self.get_parametros_operacionais(),
-        }
-
-    # ------------------------------------------------------------------
-    # Conexão
-    # ------------------------------------------------------------------
-    def conectar(self, ip="192.168.0.200") -> bool:
-        if not self.sdk_carregado():
-            self.modo_simulacao = True
-            self.ip_atual = ip
-            print("[SIMULAÇÃO] SDK indisponível; conexão física ignorada.")
-            return False
-
-        try:
-            ok = self.driver.connect(ip)
-            self.modo_simulacao = not ok
-            if ok:
-                self.ip_atual = ip
-                print(f"[ROBÔ] Conectado e habilitado em {ip}.")
-                self._start_tcp10000_monitor()
-                return True
-            print(f"[ERRO] Falha ao conectar no robô em {ip}.")
-            return False
-        except Exception as e:
-            self.modo_simulacao = True
-            print(f"[ERRO] Falha crítica ao conectar no robô: {e}")
-            return False
-
-    # ------------------------------------------------------------------
-    # Planejamento/validação
-    # ------------------------------------------------------------------
-    def validar_trajetoria_atual(self):
-        return TrajectoryPlanner.plan(self._get_pontos_snapshot())
-
-    # ------------------------------------------------------------------
-    # Movimento e I/O
-    # ------------------------------------------------------------------
-    @staticmethod
-    def _ret_ok(ret: Any) -> bool:
-        return JakaDriver.ret_ok(ret)
-
-    @staticmethod
-    def _dist_xyz(a, b) -> float:
-        return math.sqrt((float(a[0]) - float(b[0])) ** 2 + (float(a[1]) - float(b[1])) ** 2 + (float(a[2]) - float(b[2])) ** 2)
-
-    def _is_in_pos(self) -> Optional[bool]:
-        if self.modo_simulacao:
-            return True
-        try:
-            ret = self.driver.is_in_pos()
-            if isinstance(ret, (list, tuple)) and len(ret) >= 2 and ret[0] == 0:
-                return bool(ret[1])
-        except Exception as e:
-            print(f"[INPOS] Falha: {e}")
-        return None
-
-    def aguardar_chegada_por_tcp(self, alvo, tol_mm=2.0, timeout_s=120.0, ciclos_estaveis=5, exigir_inpos=False) -> bool:
-        if self.modo_simulacao:
-            return True
-        t0 = time.time()
-        stable = 0
-        last = None
-        while time.time() - t0 < timeout_s:
-            atual = self._copy_tcp()
-            dist = self._dist_xyz(atual, alvo)
-            delta = self._dist_xyz(atual, last) if last is not None else 999999.0
-            last = atual
-            inpos_ok = True
-            if exigir_inpos:
-                inpos = self._is_in_pos()
-                inpos_ok = True if inpos is None else bool(inpos)
-            if dist <= tol_mm and delta <= 0.35 and inpos_ok:
-                stable += 1
-                if stable >= ciclos_estaveis:
-                    return True
-            else:
-                stable = 0
-            time.sleep(0.03)
+    except Exception:
         return False
 
-    def ler_saida_digital(self):
-        if self.modo_simulacao:
-            return bool(self.saida_digital_ativa)
-        try:
-            ret = self.driver.get_digital_output(0, 1)
-            if isinstance(ret, (list, tuple)) and len(ret) >= 2 and ret[0] == 0:
-                return bool(ret[1])
-        except Exception as e:
-            print(f"[DO] Falha lendo saída digital: {e}")
+
+def _coerce_pose(value: Any, depth: int = 0) -> Optional[List[float]]:
+    """Aceita variações comuns de retorno do SDK JAKA e extrai [x,y,z,rx,ry,rz].
+
+    A versão original só aceitava exatamente [0, [pose]]. Se o SDK devolver direto
+    [pose], tupla, dict ou payload aninhado, a IHM ficava com TCP velho.
+    """
+    if value is None or depth > 5:
         return None
 
-    def set_saida_digital(self, ativo: bool, confirmar=False, timeout_s=2.0) -> bool:
-        ativo = bool(ativo)
-        if self.modo_simulacao:
-            self.saida_digital_ativa = ativo
-            self.diagnosticos["saida_digital_ativa"] = ativo
-            return True
-        try:
-            ret = self.driver.set_digital_output(0, 1, ativo)
-            if ret is not None and not self._ret_ok(ret):
-                print(f"[DO] set_digital_output retornou: {ret}")
-                return False
-            if confirmar:
-                t0 = time.time()
-                stable = 0
-                unavailable = False
-                while time.time() - t0 < timeout_s:
-                    val = self.ler_saida_digital()
-                    if val is None:
-                        unavailable = True
-                        break
-                    if val == ativo:
-                        stable += 1
-                        if stable >= 3:
-                            break
-                    else:
-                        stable = 0
-                    time.sleep(0.03)
-                if unavailable:
-                    time.sleep(0.12)
-                elif stable < 3:
-                    return False
-            self.saida_digital_ativa = ativo
-            self.diagnosticos["saida_digital_ativa"] = ativo
-            return True
-        except Exception as e:
-            print(f"[DO] Falha setando saída digital: {e}")
+    if isinstance(value, dict):
+        keys = (
+            "tcp", "pose", "tcp_position", "tool_pos", "tool_position",
+            "cartesian", "cartesian_pose", "cartesiantran_position",
+            "actual_tcp_pose", "tcp_pos", "pos",
+        )
+        for key in keys:
+            if key in value:
+                pose = _coerce_pose(value[key], depth + 1)
+                if pose is not None:
+                    return pose
+        for item in value.values():
+            pose = _coerce_pose(item, depth + 1)
+            if pose is not None:
+                return pose
+        return None
+
+    if isinstance(value, (list, tuple)):
+        if len(value) >= 6 and all(_is_number(x) for x in value[:6]):
+            return [float(x) for x in value[:6]]
+
+        # Formato típico: [0, [x,y,z,rx,ry,rz]] ou (0, pose)
+        if len(value) >= 2 and _is_number(value[0]):
+            pose = _coerce_pose(value[1], depth + 1)
+            if pose is not None:
+                return pose
+
+        for item in value:
+            pose = _coerce_pose(item, depth + 1)
+            if pose is not None:
+                return pose
+
+    # Alguns SDKs retornam objeto com atributos.
+    for attr in ("tcp", "pose", "tcp_position", "cartesian", "cartesian_pose"):
+        if hasattr(value, attr):
+            pose = _coerce_pose(getattr(value, attr), depth + 1)
+            if pose is not None:
+                return pose
+
+    return None
+
+
+def _refresh_tcp_from_robot(self, origem: str = "sdk") -> bool:
+    """Lê TCP real do robô e atualiza o estado publicado para a IHM."""
+    if getattr(self, "modo_simulacao", True):
+        return False
+
+    try:
+        has_robot = self.driver.has_robot()
+    except Exception:
+        has_robot = False
+    if not has_robot:
+        return False
+
+    try:
+        ret = self.driver.get_tcp_position()
+        pose = _coerce_pose(ret)
+        if pose is None:
+            with self._state_lock:
+                self.diagnosticos["tcp_status"] = "get_tcp_position sem pose reconhecida"
+                self.diagnosticos["tcp_raw_preview"] = repr(ret)[:240]
             return False
 
-    def parar_movimento_processo(self) -> bool:
-        if self.modo_simulacao:
-            return True
-        try:
-            self.driver.motion_abort()
-            return True
-        except Exception as e:
-            print(f"[STOP] motion_abort falhou: {e}")
-            return False
-
-    def _linear_move_blocking(self, pose, vel, confirm=False, name="MoveL") -> bool:
-        """MoveL bloqueante nativo da SDK, sem barreira extra por TCP.
-
-        V13 tinha confirmação adicional via TCP/is_in_pos depois do movimento. Isso
-        gerou delays grandes entre comandos no robô real. Aqui voltamos para o
-        comportamento enxuto: se a chamada bloqueante da SDK retornou OK, seguimos.
-        """
-        pose = list(pose)
-        if self.modo_simulacao:
-            self._set_tcp(pose)
-            time.sleep(0.05)
-            return True
-        try:
-            ret = self.driver.linear_move(pose, 0, True, vel)
-            if ret is not None and not self._ret_ok(ret):
-                print(f"[{name}] retorno JAKA: {ret}")
-                return False
-            return True
-        except Exception as e:
-            print(f"[{name}] Falha: {e}")
-            return False
-
-    def _linear_move_nonblocking(self, pose, vel) -> bool:
-        pose = list(pose)
-        if self.modo_simulacao:
-            self._set_tcp(pose)
-            time.sleep(0.12)
-            return True
-        try:
-            ret = self.driver.linear_move(pose, 0, False, vel)
-            if ret is not None and not self._ret_ok(ret):
-                print(f"[MoveL NB] retorno JAKA: {ret}")
-                return False
-            return True
-        except Exception as e:
-            print(f"[MoveL NB] Falha: {e}")
-            return False
-
-    def _circular_move_nonblocking(self, mid_pose, end_pose, vel) -> bool:
-        if self.modo_simulacao:
-            self._set_tcp(mid_pose)
-            time.sleep(0.12)
-            self._set_tcp(end_pose)
-            time.sleep(0.12)
-            return True
-        try:
-            # SDK JAKA: circular_move(end_pos, mid_pos, move_mode, is_block, speed, acc, tol)
-            ret = self.driver.circular_move(list(end_pose), list(mid_pose), 0, False, vel, 800, 0)
-            if ret is not None and not self._ret_ok(ret):
-                print(f"[MoveC NB] retorno JAKA: {ret}")
-                return False
-            return True
-        except Exception as e:
-            print(f"[MoveC NB] Falha: {e}")
-            return False
-
-    def _fase_entrada(self, p1_pose, clearance):
-        """Entrada comum e enxuta.
-
-        Ordem mantida:
-        DO off -> ponto alto -> P1 -> DO on.
-        Sem barreiras extras por TCP para não introduzir delays artificiais.
-        """
-        p1 = list(p1_pose)
-        p1_aprox = [a + b for a, b in zip(p1, clearance)]
-
-        if not self.set_saida_digital(False, confirmar=False):
-            return False, "Falha desligando saída digital antes da entrada."
-        if not self._linear_move_blocking(p1_aprox, self.vel_aproximacao, confirm=False, name="Entrada alto"):
-            return False, "Falha indo ao ponto alto de entrada."
-        if not self._linear_move_blocking(p1, self.vel_aproximacao, confirm=False, name="Entrada P1"):
-            return False, "Falha descendo ao primeiro ponto."
-        if not self.set_saida_digital(True, confirmar=False):
-            return False, "Falha ligando saída digital no primeiro ponto."
-        return True, "Entrada concluída."
-
-    def _executar_segmentos(self, plan) -> (bool, str):
-        for seg in plan.segments:
-            # Não usamos mais a DO como intertravamento rígido aqui por causa da variabilidade observada,
-            # mas mantemos o estado publicado. O intertravamento real deve ser revisto com logs do robô.
-            if seg.kind == SegmentKind.LINEAR:
-                print(f"[PLANO] MoveL para ponto #{seg.target.index + 1}")
-                if not self._linear_move_nonblocking(seg.target.pose, self.vel_reproducao):
-                    self.parar_movimento_processo()
-                    return False, f"Falha enviando MoveL para ponto #{seg.target.index + 1}."
-            elif seg.kind == SegmentKind.CIRCULAR:
-                print(f"[PLANO] MoveC start #{seg.start.index + 1} mid #{seg.mid.index + 1} end #{seg.end.index + 1}")
-                if not self._circular_move_nonblocking(seg.mid.pose, seg.end.pose, self.vel_reproducao):
-                    self.parar_movimento_processo()
-                    return False, f"Falha enviando MoveC pontos #{seg.mid.index + 1}/#{seg.end.index + 1}."
-            time.sleep(self.command_gap_s)
-        return True, "Trajetória principal enviada."
-
-    def _fase_saida(self, last_pose, clearance):
-        """Saída comum e enxuta: DO off -> subida sobre o último ponto."""
-        last = list(last_pose)
-        p_saida = [a + b for a, b in zip(last, clearance)]
-        if not self.set_saida_digital(False, confirmar=False):
-            self.parar_movimento_processo()
-            return False, "Falha desligando saída digital no fim."
-        if not self._linear_move_blocking(p_saida, self.vel_aproximacao, confirm=False, name="Saída"):
-            return False, "Falha no movimento de saída."
-        return True, "Saída concluída."
-
-    def executar_trajetoria(self) -> str:
-        with self._exec_lock:
-            if self.executando_trajetoria:
-                return "Já existe uma trajetória em execução."
-            self.executando_trajetoria = True
-            self.diagnosticos["executando_trajetoria"] = True
-
-        try:
-            pontos = self._get_pontos_snapshot()
-            plan = TrajectoryPlanner.plan(pontos)
-            if not plan.ok:
-                self.definir_erro_trajetoria(plan.errors)
-                msg = plan.message
-                self._emit_exec_status(msg, "error")
-                return msg
-
-            clearance = [0, 0, float(self.clearance_z_mm), 0, 0, 0]  # clearance só altera Z; RX/RY/RZ preservados
-            ok, msg = self._fase_entrada(plan.entry.pose, clearance)
-            if not ok:
-                self._emit_exec_status(msg, "error")
-                return msg
-
-            ok, msg = self._executar_segmentos(plan)
-            if not ok:
-                self.set_saida_digital(False, confirmar=False)
-                self._emit_exec_status(msg, "error")
-                return msg
-
-            if not self.aguardar_chegada_por_tcp(plan.exit.pose, tol_mm=2.0, timeout_s=120.0, ciclos_estaveis=2, exigir_inpos=False):
-                self.set_saida_digital(False, confirmar=False)
-                msg = "Timeout aguardando chegada ao último ponto. Saída digital desligada por segurança."
-                self._emit_exec_status(msg, "error")
-                return msg
-
-            ok, msg = self._fase_saida(plan.exit.pose, clearance)
-            if not ok:
-                self._emit_exec_status(msg, "error")
-                return msg
-
-            self._emit_pontos()
-            self._emit_exec_status("Trajetória física executada com sucesso.", "success")
-            return "Trajetória física executada com sucesso."
-        except Exception as e:
-            try:
-                self.parar_movimento_processo()
-                self.set_saida_digital(False, confirmar=False)
-            except Exception:
-                pass
-            msg = f"Erro na execução da trajetória: {e}"
-            self._emit_exec_status(msg, "error")
-            return msg
-        finally:
-            self.executando_trajetoria = False
-            self.diagnosticos["executando_trajetoria"] = False
-
-    # ------------------------------------------------------------------
-    # Jog/manual
-    # ------------------------------------------------------------------
-    def enviar_jog(self, eixo, vel, coord):
-        if self.modo_simulacao:
-            if abs(vel) > 0.01:
-                tcp = self._copy_tcp()
-                tcp[eixo] += vel * 0.05
-                self._set_tcp(tcp)
-            return
-        vel = round(float(vel), 2)
-        if abs(vel) < self.DEADZONE:
-            vel = 0.0
-        if vel != self.last_sent_vels[eixo]:
-            try:
-                if vel != 0.0:
-                    self.driver.jog(eixo, 2, coord, vel, 0)
-                else:
-                    self.driver.jog_stop(eixo)
-                self.last_sent_vels[eixo] = vel
-            except Exception as e:
-                print(f"[JOG] Falha eixo {eixo}: {e}")
-
-    def parar_grupo(self, eixos):
-        for eixo in eixos:
-            try:
-                if not self.modo_simulacao:
-                    self.driver.jog_stop(eixo)
-            except Exception:
-                pass
-            self.last_sent_vels[eixo] = 0.0
-
-    def _processar_joystick(self, joy):
-        """Processamento de joystick restaurado para a lógica estável antiga.
-
-        A V17 tentou "proteger" conflitos de grupos chamando jog_stop em eixos
-        inativos a cada ciclo. Isso degradou o jog real para movimento em ticks,
-        porque a SDK/controlador recebia paradas repetidas enquanto comandos de
-        jog eram enviados. Aqui a trava volta ao modelo validado: escolhe um grupo
-        ativo, mantém esse grupo até soltar seus botões, e só para o grupo que foi
-        efetivamente liberado.
-        """
-        # Se o controle manual estiver pausado para edição de parâmetros,
-        # ignora o joystick até a IHM liberar explicitamente.
-        if self.controle_manual_pausado:
-            self.grupo_ativo = None
-            if not self._pause_stop_emitido:
-                self.parar_grupo([0, 1, 2, 3, 4, 5])
-                self._pause_stop_emitido = True
-            for b in (4, 5, 6, 7, 8, 15):
-                try:
-                    self.last_btns[b] = joy.get_button(b)
-                except Exception:
-                    pass
-            return
-
-        # Se houve erro de trajetória, bloqueia o jog até ACK do operador.
-        if self.trajetoria_em_erro:
-            self.grupo_ativo = None
-            for b in (4, 5, 6, 7, 8, 15):
-                try:
-                    self.last_btns[b] = joy.get_button(b)
-                except Exception:
-                    pass
-            return
-
-        # Troca de orientação do joystick/operator frame (L3 e R3)
-        b7 = joy.get_button(7)
-        if b7 == 1 and self.last_btns[7] == 0:
-            self.angulo_operador -= math.pi / 2
-            print(f"[PERSPECTIVA] Visão à Esquerda. Ângulo: {math.degrees(self.angulo_operador)}°")
-        self.last_btns[7] = b7
-
-        b8 = joy.get_button(8)
-        if b8 == 1 and self.last_btns[8] == 0:
-            self.angulo_operador += math.pi / 2
-            print(f"[PERSPECTIVA] Visão à Direita. Ângulo: {math.degrees(self.angulo_operador)}°")
-        self.last_btns[8] = b8
-
-        cos_theta = math.cos(self.angulo_operador)
-        sin_theta = math.sin(self.angulo_operador)
-
-        # Leitura bruta de botões/eixos
-        btn_14 = joy.get_button(14)
-        btn_13 = joy.get_button(13)
-        btn_11 = joy.get_button(11)
-        btn_12 = joy.get_button(12)
-
-        btn_0 = joy.get_button(0)
-        btn_3 = joy.get_button(3)
-        btn_1 = joy.get_button(1)
-        btn_2 = joy.get_button(2)
-
-        axis_4 = joy.get_axis(4)
-        axis_5 = joy.get_axis(5)
-
-        btn_9 = joy.get_button(9)
-        btn_10 = joy.get_button(10) if joy.get_init() and joy.get_numbuttons() > 10 else 0
-
-        pressionando_linear = (btn_14 or btn_13 or btn_11 or btn_12)
-        pressionando_rotat = (btn_0 or btn_3 or btn_1 or btn_2)
-        pressionando_z = (axis_4 > -0.9 or axis_5 > -0.9)
-        pressionando_rz = (btn_9 or btn_10)
-
-        # Trava de exclusividade original: escolhe o primeiro grupo e ignora outros
-        # enquanto o grupo ativo estiver pressionado. Não fica mandando stop em
-        # todos os eixos no meio do jog.
-        if self.grupo_ativo is None:
-            if pressionando_linear:
-                self.grupo_ativo = 'LINEAR'
-            elif pressionando_rotat:
-                self.grupo_ativo = 'ROTAT_TCP'
-            elif pressionando_z:
-                self.grupo_ativo = 'EIXO_Z'
-            elif pressionando_rz:
-                self.grupo_ativo = 'EIXO_RZ'
-
-        # Parada apenas do grupo liberado.
-        if self.grupo_ativo == 'LINEAR' and not pressionando_linear:
-            self.parar_grupo([0, 1])
-            self.grupo_ativo = None
-        elif self.grupo_ativo == 'ROTAT_TCP' and not pressionando_rotat:
-            self.parar_grupo([3, 4])
-            self.grupo_ativo = None
-        elif self.grupo_ativo == 'EIXO_Z' and not pressionando_z:
-            self.parar_grupo([2])
-            self.grupo_ativo = None
-        elif self.grupo_ativo == 'EIXO_RZ' and not pressionando_rz:
-            self.parar_grupo([5])
-            self.grupo_ativo = None
-
-        if not (pressionando_linear or pressionando_rotat or pressionando_z or pressionando_rz):
-            self.grupo_ativo = None
-
-        # Execução do grupo ativo.
-        if self.grupo_ativo == 'LINEAR':
-            v_x_bruta = float(btn_14 - btn_13) * self.MAX_SPD_LINEAR
-            v_y_bruta = float(btn_11 - btn_12) * self.MAX_SPD_LINEAR
-            v_x_rotacionada = v_x_bruta * cos_theta - v_y_bruta * sin_theta
-            v_y_rotacionada = v_x_bruta * sin_theta + v_y_bruta * cos_theta
-            self.enviar_jog(0, v_x_rotacionada, 0)
-            self.enviar_jog(1, v_y_rotacionada, 0)
-
-        elif self.grupo_ativo == 'ROTAT_TCP':
-            v_rx_bruta = float(btn_0 - btn_3) * self.MAX_SPD_ROTAT
-            v_ry_bruta = float(btn_1 - btn_2) * self.MAX_SPD_ROTAT
-            v_rx_rotacionada = v_rx_bruta * cos_theta - v_ry_bruta * sin_theta
-            v_ry_rotacionada = v_rx_bruta * sin_theta + v_ry_bruta * cos_theta
-            self.enviar_jog(3, v_rx_rotacionada, 2)
-            self.enviar_jog(4, v_ry_rotacionada, 2)
-
-        elif self.grupo_ativo == 'EIXO_Z':
-            g_down = (axis_4 + 1.0) / 2.0 if axis_4 > -0.9 else 0.0
-            g_up = (axis_5 + 1.0) / 2.0 if axis_5 > -0.9 else 0.0
-            v_z = (g_up - g_down) * self.MAX_SPD_LINEAR
-            self.enviar_jog(2, v_z, 0)
-
-        elif self.grupo_ativo == 'EIXO_RZ':
-            v_rz = float(btn_9 - btn_10) * self.MAX_SPD_ROTAT
-            self.enviar_jog(5, v_rz, 1)
-
-        # Salvar ponto linear
-        b6 = joy.get_button(6)
-        if b6 == 1 and self.last_btns[6] == 0:
-            self.salvar_ponto_atual('L')
-        self.last_btns[6] = b6
-
-        # Salvar ponto circular
-        b4 = joy.get_button(4)
-        if b4 == 1 and self.last_btns[4] == 0:
-            self.salvar_ponto_atual('C')
-        self.last_btns[4] = b4
-
-        # Botão 5: toque remove último; segurar 2s limpa tudo.
-        b5 = joy.get_button(5)
-        if b5 == 1:
-            if self.last_btns[5] == 0:
-                self.b5_press_time = time.time()
-                self.b5_triggered_long_press = False
-            elif self.b5_press_time and not self.b5_triggered_long_press:
-                if time.time() - self.b5_press_time >= 2.0:
-                    self.limpar_pontos()
-                    print('[JOYSTICK] Botão 5 segurado por 2s: trajetória limpa.')
-                    self.b5_triggered_long_press = True
-        elif b5 == 0 and self.last_btns[5] == 1:
-            if not self.b5_triggered_long_press:
-                if self.remover_ultimo_ponto():
-                    print('[JOYSTICK] Botão 5: último ponto removido.')
-            self.b5_press_time = None
-            self.b5_triggered_long_press = False
-        self.last_btns[5] = b5
-
-        # Botão 15: executar com backup dos pontos para manter a tela.
-        b15 = joy.get_button(15)
-        if b15 == 1 and self.last_btns[15] == 0:
-            backup = self._get_pontos_snapshot()
-            def run():
-                self.executar_trajetoria()
-                self._set_pontos(backup)
-            threading.Thread(target=run, daemon=True).start()
-        self.last_btns[15] = b15
-
-    def salvar_ponto_atual(self, tipo):
-        tipo = str(tipo).upper()
-        if tipo not in ("L", "C"):
-            return False
-        pose = self._copy_tcp()
-        # Ponto SEMPRE absoluto e completo: [x,y,z,rx,ry,rz].
-        # Não reduzir para XY e não transformar em relativo.
-        pose = [float(v) for v in pose[:6]]
-        if len(pose) != 6:
-            self.definir_erro_trajetoria(["Falha interna: pose TCP incompleta. Esperado [x,y,z,rx,ry,rz]."])
-            return False
+        self._set_tcp(pose)
         with self._state_lock:
-            self.lista_pontos.append((tipo, pose))
-            idx = len(self.lista_pontos)
-        print(f"[PONTO] #{idx} {tipo} ABS {pose}")
-        self._emit_pontos()
+            self.diagnosticos["tcp_status"] = "OK"
+            self.diagnosticos["tcp_origem"] = origem
+            self.diagnosticos["ultima_leitura_tcp_ts"] = time.time()
         return True
-
-    # ------------------------------------------------------------------
-    # Telemetria
-    # ------------------------------------------------------------------
-    @staticmethod
-    def _extract_jsons(buffer: str):
-        objs = []
-        start = None
-        depth = 0
-        in_str = False
-        esc = False
-        last_end = 0
-        for i, ch in enumerate(buffer):
-            if in_str:
-                if esc:
-                    esc = False
-                elif ch == "\\":
-                    esc = True
-                elif ch == '"':
-                    in_str = False
-                continue
-            if ch == '"':
-                in_str = True
-            elif ch == "{":
-                if depth == 0:
-                    start = i
-                depth += 1
-            elif ch == "}":
-                if depth > 0:
-                    depth -= 1
-                    if depth == 0 and start is not None:
-                        objs.append(buffer[start:i+1])
-                        last_end = i + 1
-                        start = None
-        return objs, buffer[last_end:]
-
-    def _start_tcp10000_monitor(self):
-        if self.modo_simulacao or not self.ip_atual:
-            return
-        if self._tcp10000_thread and self._tcp10000_thread.is_alive():
-            return
-        self._tcp10000_stop.clear()
-        self._tcp10000_thread = threading.Thread(target=self._tcp10000_loop, daemon=True)
-        self._tcp10000_thread.start()
-
-    def _apply_telemetry_updates(self, updates: Dict[str, Any], debug: Dict[str, Any]):
-        if "tcp" in updates:
-            self._set_tcp(updates.pop("tcp"))
+    except Exception as e:
         with self._state_lock:
-            self._last_telemetry_debug = debug
-            if updates:
-                self.diagnosticos.update(updates)
+            self.diagnosticos["tcp_status"] = f"Falha get_tcp_position: {e}"
+        return False
 
-    def _tcp10000_loop(self):
-        while not self._tcp10000_stop.is_set():
-            if not self.ip_atual or self.modo_simulacao:
-                time.sleep(1.0); continue
-            sock = None
+
+_original_conectar = adapter.conectar
+_original_salvar_ponto_atual = adapter.salvar_ponto_atual
+_original_update_telemetry_low_freq = adapter._update_telemetry_low_freq
+
+
+def _patched_conectar(self, ip="192.168.0.200"):
+    ok = _original_conectar(ip)
+    if ok and not getattr(self, "modo_simulacao", True):
+        # Primeira leitura imediata para a tela não abrir congelada em zero.
+        for _ in range(5):
+            if self._refresh_tcp_from_robot("connect"):
+                break
+            time.sleep(0.08)
+        if self.on_state_update:
+            self.on_state_update(self.snapshot_state())
+    return ok
+
+
+def _patched_salvar_ponto_atual(self, tipo):
+    # Antes de gravar ponto, força leitura real. Sem isso, ponto físico podia sair
+    # com pose antiga se o TCP10000/telemetria não estivesse alimentando o estado.
+    self._refresh_tcp_from_robot("antes_salvar_ponto")
+    return _original_salvar_ponto_atual(tipo)
+
+
+def _patched_update_telemetry_low_freq(self):
+    # Mantém a telemetria antiga, mas não depende dela para atualizar TCP.
+    self._refresh_tcp_from_robot("low_freq")
+    return _original_update_telemetry_low_freq()
+
+
+def _patched_iniciar_loop_controle(self):
+    pygame = _REAL_MOD.pygame
+    pygame.init()
+    pygame.joystick.init()
+    try:
+        joy = pygame.joystick.Joystick(0)
+        joy.init()
+        print(f"[JOYSTICK] {joy.get_name()} inicializado.")
+    except Exception:
+        joy = None
+        print("[JOYSTICK] Nenhum controle encontrado.")
+
+    def loop():
+        nonlocal joy
+        last_tcp_poll = 0.0
+        while True:
             try:
-                sock = socket.create_connection((self.ip_atual, 10000), timeout=3.0)
-                sock.settimeout(1.0)
-                buffer = ""
-                while not self._tcp10000_stop.is_set() and not self.modo_simulacao:
+                if joy is None and pygame.joystick.get_count() > 0:
                     try:
-                        chunk = sock.recv(8192)
-                    except socket.timeout:
-                        continue
-                    if not chunk:
-                        raise ConnectionError("socket fechado")
-                    buffer += chunk.decode("utf-8", errors="ignore")
-                    if len(buffer) > 2_000_000:
-                        buffer = buffer[-200_000:]
-                    raws, buffer = self._extract_jsons(buffer)
-                    for raw in raws:
-                        try:
-                            payload = json.loads(raw)
-                        except Exception:
-                            continue
-                        updates, debug = TelemetryParser.parse_tcp_payload(payload)
-                        self._apply_telemetry_updates(updates, debug)
-            except Exception as e:
-                with self._state_lock:
-                    self.diagnosticos["telemetria_status"] = f"TCP10000 indisponível/não validado: {e}"
-                time.sleep(1.0)
-            finally:
-                try:
-                    if sock:
-                        sock.close()
-                except Exception:
-                    pass
+                        joy = pygame.joystick.Joystick(0)
+                        joy.init()
+                        print(f"[JOYSTICK] {joy.get_name()} reconectado.")
+                    except Exception:
+                        joy = None
 
-    def _update_telemetry_low_freq(self):
-        backend_uptime = int(time.time() - self.tempo_inicio_sistema)
-        with self._state_lock:
-            self.diagnosticos["backend_uptime_segundos"] = backend_uptime
-            if not self.diagnosticos.get("robot_uptime_segundos"):
-                self.diagnosticos["uptime_segundos"] = backend_uptime
-                self.diagnosticos["uptime_fonte"] = "backend"
-            self.diagnosticos["executando_trajetoria"] = self.executando_trajetoria
-            self.diagnosticos["saida_digital_ativa"] = self.saida_digital_ativa
-            self.diagnosticos["controle_manual_pausado"] = self.controle_manual_pausado
-            self.diagnosticos["clearance_z_mm"] = float(self.clearance_z_mm)
-            self.diagnosticos["jog_linear_mm_s"] = float(self.MAX_SPD_LINEAR)
-            self.diagnosticos["jog_rot_rad_s"] = float(self.MAX_SPD_ROTAT)
+                self._contador_telemetria += 1
+                if self._contador_telemetria >= 15:
+                    self._contador_telemetria = 0
+                    self._update_telemetry_low_freq()
 
-        if self.modo_simulacao:
-            with self._state_lock:
-                self.diagnosticos["telemetria_real"] = False
-                self.diagnosticos["telemetria_origem"] = "simulação"
-                self.diagnosticos["telemetria_status"] = "Modo simulação: sem dados reais do robô"
-                self.diagnosticos["telemetria_parser"] = "none"
-                self.diagnosticos["telemetria_confianca"] = 0
-                # Valores zerados propositalmente; não fingimos corrente/temperatura real.
-                self.diagnosticos["correntes"] = [0.0] * 6
-                self.diagnosticos["temperaturas"] = [0.0] * 6
-            return
-
-        if not self.driver.has_robot():
-            return
-
-        try:
-            ret = self.driver.get_tcp_position()
-            if isinstance(ret, (list, tuple)) and len(ret) >= 2 and ret[0] == 0 and isinstance(ret[1], (list, tuple)):
-                self._set_tcp(ret[1][:6])
-        except Exception as e:
-            print(f"[TCP] Falha get_tcp_position: {e}")
-
-        # Se TCP10000 está atualizando dados reais, não sobrescrevemos por SDK.
-        last = self.diagnosticos.get("ultima_telemetria_real_ts")
-        if last and time.time() - float(last) < 2.0 and self.diagnosticos.get("telemetria_origem") == "TCP10000":
-            return
-
-        try:
-            status = self.driver.get_robot_status()
-            updates, debug = TelemetryParser.parse_robot_status(status)
-            self._apply_telemetry_updates(updates, debug)
-        except Exception as e:
-            with self._state_lock:
-                self.diagnosticos["telemetria_real"] = False
-                self.diagnosticos["telemetria_status"] = f"Falha lendo SDK get_robot_status: {e}"
-
-        # Expira selo real se nenhum parser validado atualizar recentemente.
-        last = self.diagnosticos.get("ultima_telemetria_real_ts")
-        if not last or time.time() - float(last) > 5.0:
-            with self._state_lock:
-                self.diagnosticos["telemetria_real"] = False
-                if "validada" not in str(self.diagnosticos.get("telemetria_status", "")):
-                    self.diagnosticos["telemetria_status"] = "Sem telemetria real validada nos últimos 5s"
-
-    def get_telemetry_debug(self) -> Dict[str, Any]:
-        with self._state_lock:
-            return {
-                "diagnosticos": copy.deepcopy(self.diagnosticos),
-                "debug": copy.deepcopy(self._last_telemetry_debug),
-                "sdk_carregado": self.sdk_carregado(),
-                "modo_simulacao": self.modo_simulacao,
-                "ip_atual": self.ip_atual,
-            }
-
-    # ------------------------------------------------------------------
-    # Loop principal
-    # ------------------------------------------------------------------
-    def iniciar_loop_controle(self):
-        pygame.init()
-        pygame.joystick.init()
-        try:
-            joy = pygame.joystick.Joystick(0)
-            joy.init()
-            print(f"[JOYSTICK] {joy.get_name()} inicializado.")
-        except Exception:
-            joy = None
-            print("[JOYSTICK] Nenhum controle encontrado.")
-
-        def loop():
-            nonlocal joy
-            while True:
-                try:
-                    if joy is None and pygame.joystick.get_count() > 0:
-                        try:
-                            joy = pygame.joystick.Joystick(0)
+                if joy:
+                    try:
+                        if not joy.get_init():
                             joy.init()
-                        except Exception:
-                            joy = None
+                        pygame.event.pump()
+                        self._processar_joystick(joy)
+                    except (pygame.error, AttributeError) as e:
+                        print(f"[JOYSTICK] Falha/desconectado: {e}")
+                        self.parar_grupo([0, 1, 2, 3, 4, 5])
+                        self.grupo_ativo = None
+                        joy = None
 
-                    self._contador_telemetria += 1
-                    if self._contador_telemetria >= 15:
-                        self._contador_telemetria = 0
-                        self._update_telemetry_low_freq()
+                # Ponto central da correção:
+                # Em robô real, busca TCP por SDK continuamente, não só pela telemetria.
+                now = time.time()
+                if now - last_tcp_poll >= 0.08:
+                    self._refresh_tcp_from_robot("loop")
+                    last_tcp_poll = now
 
-                    if joy:
-                        try:
-                            if not joy.get_init():
-                                joy.init()
-                            pygame.event.pump()
-                            self._processar_joystick(joy)
-                        except (pygame.error, AttributeError) as e:
-                            print(f"[JOYSTICK] Falha/desconectado: {e}")
-                            self.parar_grupo([0, 1, 2, 3, 4, 5])
-                            self.grupo_ativo = None
-                            joy = None
+                if self.on_state_update:
+                    self.on_state_update(self.snapshot_state())
+            except Exception as e:
+                print(f"[LOOP] Erro inesperado: {e}")
+            time.sleep(0.03)
 
-                    if self.on_state_update:
-                        self.on_state_update(self.snapshot_state())
-                except Exception as e:
-                    print(f"[LOOP] Erro inesperado: {e}")
-                time.sleep(0.03)
-
-        threading.Thread(target=loop, daemon=True).start()
+    threading.Thread(target=loop, daemon=True).start()
 
 
-adapter = RobotAdapter()
+# Aplica patches na instância usada pelo app.py.
+adapter._refresh_tcp_from_robot = MethodType(_refresh_tcp_from_robot, adapter)
+adapter.conectar = MethodType(_patched_conectar, adapter)
+adapter.salvar_ponto_atual = MethodType(_patched_salvar_ponto_atual, adapter)
+adapter._update_telemetry_low_freq = MethodType(_patched_update_telemetry_low_freq, adapter)
+adapter.iniciar_loop_controle = MethodType(_patched_iniciar_loop_controle, adapter)
