@@ -9,7 +9,7 @@
 # Workspace: P1 e P2 definem a borda distante da mesa. A origem da base do robô
 # (0,0) define o lado próximo por projeção perpendicular nessa borda. Isso gera
 # um retângulo orientado, sem exigir mesmo X/Y, nem alinhamento com os eixos.
-# Z da superfície = menor Z entre P1 e P2.
+# Z da superfície = menor Z entre P1 e P2. Z limite TCP = superfície + margem Z.
 # Se o TCP estiver fora do workspace, TODO jog por controle é bloqueado; o retorno
 # deve ser feito por Drag Mode / Free Drive.
 
@@ -134,7 +134,7 @@ def _workspace_default() -> Dict[str, Any]:
         "enabled": False,
         "p1": None,
         "p2": None,
-        "z_margin_mm": 10.0,
+        "z_margin_mm": 0.5,
         "xy_margin_mm": 5.0,
         "slow_zone_mm": 30.0,
     }
@@ -192,8 +192,6 @@ def _workspace_limits_from_cfg(cfg: Dict[str, Any]) -> Optional[Dict[str, Any]]:
 
     u = [ab[0] / edge_len, ab[1] / edge_len]
 
-    # Projeção da base do robô na reta P1-P2. A profundidade da mesa é a distância
-    # perpendicular da origem até essa reta. Não há hipótese de alinhamento em X/Y.
     ao = _sub2(origin, a)
     s_origin = _dot2(ao, u)
     q = _add2(a, _mul2(u, s_origin))
@@ -207,7 +205,7 @@ def _workspace_limits_from_cfg(cfg: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     near_b = _add2(b, _mul2(n, depth))
 
     z_surface = min(float(p1[2]), float(p2[2]))
-    z_margin = float(cfg.get("z_margin_mm", 10.0))
+    z_margin = float(cfg.get("z_margin_mm", 0.5))
     xy_margin = float(cfg.get("xy_margin_mm", 5.0))
     slow_zone = max(1.0, float(cfg.get("slow_zone_mm", 30.0)))
 
@@ -250,7 +248,6 @@ def _workspace_limits_from_cfg(cfg: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         "xy_margin_mm": xy_margin,
         "z_margin_mm": z_margin,
         "slow_zone_mm": slow_zone,
-        # Compatibilidade visual para UI atual; é bounding box, não a regra principal.
         "x_min": min(xs),
         "x_max": max(xs),
         "y_min": min(ys),
@@ -285,7 +282,7 @@ def _workspace_status(self) -> Dict[str, Any]:
         "limits": limits,
     }
     if not status["enabled"]:
-        status["message"] = "Workspace desabilitado."
+        status["message"] = "Workspace desabilitado. Marque 'Habilitar limites da mesa' para bloquear o jog."
         return status
     if limits is None:
         status["inside"] = False
@@ -337,7 +334,7 @@ def _set_workspace_config(self, dados):
         cfg["p2"] = _pose3_from_any(dados.get("p2"))
 
     for key, lo, hi, default in (
-        ("z_margin_mm", 0.0, 300.0, 10.0),
+        ("z_margin_mm", 0.0, 300.0, 0.5),
         ("xy_margin_mm", 0.0, 300.0, 5.0),
         ("slow_zone_mm", 1.0, 500.0, 30.0),
     ):
@@ -349,8 +346,6 @@ def _set_workspace_config(self, dados):
         elif key not in cfg:
             cfg[key] = default
 
-    # Sem restrição de X/Y igual, diferente, proporção ou alinhamento.
-    # Só a geometria degenerada fica inválida: P1=P2 ou reta P1-P2 passando pela origem.
     with self._state_lock:
         self.workspace = cfg
         self.diagnosticos["workspace"] = self._workspace_status()
@@ -370,29 +365,41 @@ def _set_workspace_point_from_tcp(self, ponto: str):
     return self.set_workspace_config(cfg)
 
 
+def _bloquear_jog_workspace(self, motivo: str, eixo: int, vel: float) -> float:
+    self.parar_grupo([0, 1, 2, 3, 4, 5])
+    self._workspace_stop_emitido = True
+    status = self._workspace_status()
+    with self._state_lock:
+        self.diagnosticos["workspace"] = status
+        self.diagnosticos["workspace_bloqueio"] = {
+            "motivo": motivo,
+            "eixo": int(eixo),
+            "vel_original": float(vel),
+            "ts": time.time(),
+        }
+    print(f"[WORKSPACE] Jog bloqueado: {motivo}")
+    return 0.0
+
+
 def _limitar_velocidade_workspace(self, eixo: int, vel: float) -> float:
     cfg = getattr(self, "workspace", _workspace_default())
     if not cfg.get("enabled"):
         return vel
+
+    # Lê TCP real imediatamente antes de validar limite. Sem isso, o limite pode usar
+    # uma amostra velha e deixar o robô passar da superfície.
+    try:
+        self._refresh_tcp_from_robot("workspace_limit")
+    except Exception:
+        pass
+
     limits = _workspace_limits_from_cfg(cfg)
     if limits is None:
-        return 0.0
+        return self._bloquear_jog_workspace("workspace inválido ou não configurado", eixo, vel)
 
     status = self._workspace_status()
     if status.get("jog_locked"):
-        if not getattr(self, "_workspace_stop_emitido", False):
-            self.parar_grupo([0, 1, 2, 3, 4, 5])
-            self._workspace_stop_emitido = True
-            print(f"[WORKSPACE] Controle bloqueado: {status.get('message')}")
-        with self._state_lock:
-            self.diagnosticos["workspace"] = status
-            self.diagnosticos["workspace_bloqueio"] = {
-                "motivo": "TCP fora da área; retorno apenas por Drag Mode / Free Drive",
-                "eixo": int(eixo),
-                "vel_original": float(vel),
-                "ts": time.time(),
-            }
-        return 0.0
+        return self._bloquear_jog_workspace("TCP fora da área; retorno apenas por Drag Mode / Free Drive", eixo, vel)
 
     self._workspace_stop_emitido = False
 
@@ -410,14 +417,14 @@ def _limitar_velocidade_workspace(self, eixo: int, vel: float) -> float:
         slow = float(limits["slow_zone_mm"])
         if vel < 0:
             if z <= lo:
-                return 0.0
+                return self._bloquear_jog_workspace(f"limite Z atingido: TCP Z={z:.3f}, limite={lo:.3f}", eixo, vel)
             dist = z - lo
             if dist < slow:
-                return vel * max(0.0, min(1.0, dist / slow))
+                vel = vel * max(0.0, min(1.0, dist / slow))
+                if abs(vel) < 0.01:
+                    return self._bloquear_jog_workspace(f"limite Z próximo: TCP Z={z:.3f}, limite={lo:.3f}", eixo, vel)
         return vel
 
-    # X/Y em retângulo orientado: calcula contribuição do movimento base-eixo
-    # nos eixos locais S (borda P1-P2) e T (profundidade até a base).
     x, y = float(tcp[0]), float(tcp[1])
     s, t = _workspace_coords_xy(limits, x, y)
     slow = float(limits["slow_zone_mm"])
@@ -443,6 +450,8 @@ def _limitar_velocidade_workspace(self, eixo: int, vel: float) -> float:
 
     factor = apply_boundary(s, ds, limits["s_min_safe"], limits["s_max_safe"], factor)
     factor = apply_boundary(t, dt, limits["t_min_safe"], limits["t_max_safe"], factor)
+    if factor <= 0.0:
+        return self._bloquear_jog_workspace("limite XY orientado atingido", eixo, vel)
     return vel * factor
 
 
