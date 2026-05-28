@@ -1,7 +1,7 @@
 # app.py
 # Backend Flask/Socket.IO — IHM Solda Payback — V17.2 parâmetros operacionais.
 # HTML fica na raiz do projeto.
-# Patch: fallback HTTP /api/estado + interface de workspace/mesa injetada na tela Parâmetros.
+# Patch: fallback HTTP /api/estado + UI de workspace + desenho do workspace na trajetória.
 
 import os
 import eventlet
@@ -117,9 +117,214 @@ HMI_POLLING_PATCH = r'''
     return txt;
   }
 
+  function getWorkspaceLimits() {
+    var ws = window.__paybackWorkspace;
+    return ws && ws.status && ws.status.limits ? ws.status.limits : null;
+  }
+
+  function hasWorkspaceLimits() {
+    var l = getWorkspaceLimits();
+    return !!(l && Array.isArray(l.vertices_xy) && l.vertices_xy.length === 4);
+  }
+
+  function instalarWorkspaceTrajectoryPatch() {
+    if (window.__paybackWsTrajectoryPatchInstalled) return;
+    if (typeof canvas === 'undefined' || typeof ctx === 'undefined') return;
+    if (typeof desenharVisualizacao !== 'function' || typeof projectPoseToCanvas !== 'function') return;
+    window.__paybackWsTrajectoryPatchInstalled = true;
+
+    var originalDesenhar = desenharVisualizacao;
+    var originalProject = projectPoseToCanvas;
+    var ROBOT_DIAMETER_MM = 160;
+    var ROBOT_RADIUS_MM = ROBOT_DIAMETER_MM / 2;
+    var RED = 'rgba(220, 38, 38, 1)';
+
+    function centerOfVertices(vertices) {
+      var sx = 0, sy = 0;
+      vertices.forEach(function(p){ sx += Number(p[0] || 0); sy += Number(p[1] || 0); });
+      return [sx / vertices.length, sy / vertices.length];
+    }
+
+    function rotateAroundWorkspace(p, center) {
+      var r = ((viewRot % 4) + 4) % 4;
+      var x = Number(p[0] || 0), y = Number(p[1] || 0);
+      var dx = x - center[0], dy = y - center[1];
+      if (r === 0) return [center[0] + dx, center[1] + dy];
+      if (r === 1) return [center[0] + dy, center[1] - dx];
+      if (r === 2) return [center[0] - dx, center[1] - dy];
+      return [center[0] - dy, center[1] + dx];
+    }
+
+    function buildWorkspaceTransform() {
+      var limits = getWorkspaceLimits();
+      if (!limits || !Array.isArray(limits.vertices_xy) || limits.vertices_xy.length !== 4) return null;
+      var rect = canvas.getBoundingClientRect();
+      var w = rect.width || 700;
+      var h = rect.height || 520;
+      var wsCenter = centerOfVertices(limits.vertices_xy);
+      var pts = limits.vertices_xy.slice();
+      // Inclui o círculo real da base do robô no fit, com 160 mm de diâmetro.
+      pts.push([0, 0], [ROBOT_RADIUS_MM, 0], [-ROBOT_RADIUS_MM, 0], [0, ROBOT_RADIUS_MM], [0, -ROBOT_RADIUS_MM]);
+      var rot = pts.map(function(p){ return rotateAroundWorkspace(p, wsCenter); });
+      var xs = rot.map(function(p){ return p[0]; });
+      var ys = rot.map(function(p){ return p[1]; });
+      var minX = Math.min.apply(null, xs), maxX = Math.max.apply(null, xs);
+      var minY = Math.min.apply(null, ys), maxY = Math.max.apply(null, ys);
+      var pad = 54;
+      var worldW = Math.max(1, maxX - minX);
+      var worldH = Math.max(1, maxY - minY);
+      var scale = Math.max(0.02, Math.min((w - pad*2) / worldW, (h - pad*2) / worldH));
+      return {
+        limits: limits,
+        wsCenter: wsCenter,
+        scale: scale,
+        screenCenter: [w/2, h/2],
+        worldCenter: [(minX + maxX)/2, (minY + maxY)/2],
+        w: w,
+        h: h
+      };
+    }
+
+    function worldToScreenXY(p, t) {
+      var rp = rotateAroundWorkspace(p, t.wsCenter);
+      return {
+        x: t.screenCenter[0] + (rp[0] - t.worldCenter[0]) * t.scale,
+        y: t.screenCenter[1] - (rp[1] - t.worldCenter[1]) * t.scale
+      };
+    }
+
+    projectPoseToCanvas = function(p) {
+      var t = buildWorkspaceTransform();
+      if (!t) return originalProject(p);
+      escala = t.scale;
+      return worldToScreenXY([Number(p?.[0] || 0), Number(p?.[1] || 0)], t);
+    };
+    window.projectPoseToCanvas = projectPoseToCanvas;
+
+    rotacionarVistaTrajetoria = function() {
+      viewRot = (viewRot + 1) % 4;
+      var el = document.getElementById('view-angle-label');
+      if (el) el.innerText = (viewRot * 90) + '°';
+      desenharVisualizacao();
+    };
+    window.rotacionarVistaTrajetoria = rotacionarVistaTrajetoria;
+
+    function drawWorkspaceMesa(t) {
+      var vertices = t.limits.vertices_xy;
+      var screenPts = vertices.map(function(p){ return worldToScreenXY(p, t); });
+      ctx.save();
+      ctx.beginPath();
+      ctx.moveTo(screenPts[0].x, screenPts[0].y);
+      for (var i = 1; i < screenPts.length; i++) ctx.lineTo(screenPts[i].x, screenPts[i].y);
+      ctx.closePath();
+      ctx.fillStyle = 'rgba(0, 174, 214, 0.07)';
+      ctx.fill();
+      ctx.strokeStyle = 'rgba(0, 174, 214, 0.95)';
+      ctx.lineWidth = 2;
+      ctx.stroke();
+
+      var robot = worldToScreenXY([0, 0], t);
+      var rr = ROBOT_RADIUS_MM * t.scale;
+      ctx.beginPath();
+      ctx.arc(robot.x, robot.y, rr, 0, Math.PI * 2);
+      ctx.fillStyle = 'rgba(220, 38, 38, 0.12)';
+      ctx.fill();
+      ctx.strokeStyle = RED;
+      ctx.lineWidth = 2;
+      ctx.stroke();
+      ctx.fillStyle = RED;
+      ctx.font = '700 ' + Math.max(9, Math.min(18, rr * 0.38)) + 'px Segoe UI';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText('Robô', robot.x, robot.y);
+      ctx.restore();
+    }
+
+    function drawGrid(w, h, t) {
+      ctx.strokeStyle = '#EEF3F8';
+      ctx.lineWidth = 1;
+      for (var x = 0; x < w; x += 40) { ctx.beginPath(); ctx.moveTo(x,0); ctx.lineTo(x,h); ctx.stroke(); }
+      for (var y = 0; y < h; y += 40) { ctx.beginPath(); ctx.moveTo(0,y); ctx.lineTo(w,y); ctx.stroke(); }
+      var zero = worldToScreenXY([0,0], t);
+      ctx.strokeStyle = '#DDE4EC';
+      ctx.lineWidth = 1.5;
+      ctx.beginPath(); ctx.moveTo(0, zero.y); ctx.lineTo(w, zero.y); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(zero.x, 0); ctx.lineTo(zero.x, h); ctx.stroke();
+    }
+
+    desenharVisualizacao = function() {
+      if (!ctx || !canvas) return;
+      var t = buildWorkspaceTransform();
+      if (!t) return originalDesenhar();
+
+      escala = t.scale;
+      offset_x = t.screenCenter[0] - t.worldCenter[0] * t.scale;
+      offset_y = t.screenCenter[1] + t.worldCenter[1] * t.scale;
+
+      ctx.clearRect(0, 0, t.w, t.h);
+      drawGrid(t.w, t.h, t);
+      drawWorkspaceMesa(t);
+
+      var pts = estadoLocal.pontos || [];
+      if (pts.length > 0) {
+        var currentPose = pose6(pts[0]?.[1]);
+        desenharMarcadorPose(currentPose, 'P1 (entrada)', '#003865', 6);
+        var i = 1;
+        if (String(pts[0]?.[0] || '').toUpperCase() === 'C') {
+          if (pts.length >= 3 && String(pts[1]?.[0] || '').toUpperCase() === 'C' && String(pts[2]?.[0] || '').toUpperCase() === 'C') {
+            ctx.strokeStyle = '#E0A100'; ctx.lineWidth = 3;
+            drawJakaMoveCArc(pose6(pts[0][1]), pose6(pts[1][1]), pose6(pts[2][1]));
+            desenharMarcadorPose(pose6(pts[1][1]), 'C2', '#E0A100', 5);
+            desenharMarcadorPose(pose6(pts[2][1]), 'C3', '#E0A100', 5);
+            currentPose = pose6(pts[2][1]);
+            i = 3;
+          }
+        }
+        while (i < pts.length) {
+          var tipo = String(pts[i]?.[0] || 'L').toUpperCase();
+          var pose = pose6(pts[i]?.[1]);
+          if (tipo === 'C') {
+            if (i + 2 < pts.length && String(pts[i+1]?.[0] || '').toUpperCase() === 'C' && String(pts[i+2]?.[0] || '').toUpperCase() === 'C') {
+              desenharLinhaPose(currentPose, pose, '#CC3340', 2.5);
+              desenharMarcadorPose(pose, 'C' + (i+1) + ' início', '#E0A100', 5);
+              ctx.strokeStyle = '#E0A100'; ctx.lineWidth = 3;
+              drawJakaMoveCArc(pose, pose6(pts[i+1][1]), pose6(pts[i+2][1]));
+              desenharMarcadorPose(pose6(pts[i+1][1]), 'C' + (i+2) + ' passagem', '#E0A100', 5);
+              desenharMarcadorPose(pose6(pts[i+2][1]), 'C' + (i+3) + ' fim', '#E0A100', 5);
+              currentPose = pose6(pts[i+2][1]);
+              i += 3;
+            } else {
+              desenharLinhaPose(currentPose, pose, '#CC3340', 2);
+              desenharMarcadorPose(pose, 'C' + (i+1) + ' incompleto', '#CC3340', 5);
+              currentPose = pose;
+              i += 1;
+            }
+          } else {
+            desenharLinhaPose(currentPose, pose, '#CC3340', 3);
+            desenharMarcadorPose(pose, 'L' + (i+1), '#28323D', 5);
+            currentPose = pose;
+            i += 1;
+          }
+        }
+      }
+
+      var tcp = pose6(estadoLocal.tcp);
+      var tcpP = projectPoseToCanvas(tcp);
+      ctx.strokeStyle = '#00AED6';
+      ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.moveTo(tcpP.x - 18, tcpP.y); ctx.lineTo(tcpP.x + 18, tcpP.y); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(tcpP.x, tcpP.y - 18); ctx.lineTo(tcpP.x, tcpP.y + 18); ctx.stroke();
+      ctx.beginPath(); ctx.arc(tcpP.x, tcpP.y, 5, 0, 2*Math.PI); ctx.fillStyle = '#003865'; ctx.fill(); ctx.stroke();
+    };
+    window.desenharVisualizacao = desenharVisualizacao;
+  }
+  window.instalarWorkspaceTrajectoryPatch = instalarWorkspaceTrajectoryPatch;
+
   function atualizarWorkspaceUI(ws) {
     try {
+      window.__paybackWorkspace = ws;
       criarWorkspaceUI();
+      instalarWorkspaceTrajectoryPatch();
       if (!ws) return;
       var cfg = ws.config || {};
       var status = ws.status || {};
@@ -141,6 +346,7 @@ HMI_POLLING_PATCH = r'''
         st.textContent = textoWorkspace(status, cfg);
       }
       atualizarWorkspaceModal(ws);
+      if (typeof desenharVisualizacao === 'function' && typeof telaAtual !== 'undefined' && telaAtual === 'trajetoria') desenharVisualizacao();
     } catch(e) { console.warn('[workspace] falha UI', e); }
   }
   window.atualizarWorkspaceUI = atualizarWorkspaceUI;
@@ -270,7 +476,7 @@ HMI_POLLING_PATCH = r'''
     }
   }
 
-  setTimeout(function(){ criarWorkspaceUI(); pollEstado(); }, 120);
+  setTimeout(function(){ criarWorkspaceUI(); instalarWorkspaceTrajectoryPatch(); pollEstado(); }, 120);
   setInterval(pollEstado, 180);
 })();
 </script>
@@ -289,20 +495,12 @@ def _response_no_cache(body: str):
 def index():
     from pathlib import Path
     base = Path(__file__).resolve().parent
-    candidates = [
-        base / 'index.html',
-        base / 'Index.html',
-        base / 'templates' / 'index.html',
-        base / 'templates' / 'Index.html',
-    ]
+    candidates = [base / 'index.html', base / 'Index.html', base / 'templates' / 'index.html', base / 'templates' / 'Index.html']
     for candidate in candidates:
         if candidate.exists():
             html = candidate.read_text(encoding='utf-8', errors='ignore')
             if 'id="hmi-polling-fallback"' not in html:
-                if '</body>' in html:
-                    html = html.replace('</body>', HMI_POLLING_PATCH + '\n</body>')
-                else:
-                    html += HMI_POLLING_PATCH
+                html = html.replace('</body>', HMI_POLLING_PATCH + '\n</body>') if '</body>' in html else html + HMI_POLLING_PATCH
             return _response_no_cache(html)
     return ('index.html não encontrado. Coloque o arquivo como index.html na raiz ou em templates/Index.html.', 500)
 
@@ -436,7 +634,6 @@ def gerenciar_execucao_segura():
 def executar_trajetoria():
     if adapter.executando_trajetoria:
         return jsonify({'status': 'error', 'message': 'Já existe uma trajetória em execução.'}), 409
-
     plan = adapter.validar_trajetoria_atual()
     if not plan.ok:
         adapter.definir_erro_trajetoria(plan.errors)
@@ -445,7 +642,6 @@ def executar_trajetoria():
         socketio.emit('execucao_status', {'message': plan.message, 'status': 'error'})
         socketio.emit('atualizar_estado', adapter.snapshot_state())
         return jsonify(payload), 400
-
     eventlet.spawn(gerenciar_execucao_segura)
     eventlet.sleep(0.01)
     return jsonify({'status': 'success', 'message': 'Trajetória validada e iniciada em background.', 'plan': plan.to_dict()})
