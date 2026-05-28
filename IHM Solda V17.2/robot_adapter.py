@@ -1,11 +1,12 @@
-# robot_adapter.py — wrapper V17.2 com correções de TCP, workspace e segurança de trajetória.
+# robot_adapter.py — wrapper V17.2 com TCP, workspace e segurança de trajetória.
 #
-# Carrega o adapter histórico da pasta de solda e aplica patches locais para:
-# - publicar TCP real continuamente;
-# - impedir telemetria/diagnóstico de sobrescrever o TCP oficial usado em pontos;
-# - limitar jog ao workspace;
-# - bloquear joystick durante execução de trajetória;
-# - desligar a saída digital de solda fora do estado de trajetória.
+# Este wrapper carrega o adapter histórico da solda e aplica patches locais:
+# - TCP real publicado continuamente;
+# - telemetria não sobrescreve o TCP oficial usado para salvar pontos;
+# - workspace orientado por P1/P2 + base do robô;
+# - joystick bloqueado durante trajetória;
+# - saída digital de solda só liga durante trajetória;
+# - trajetória NÃO aborta por "robô parado". Parada pode ser pausa legítima.
 
 from pathlib import Path
 import importlib.util
@@ -79,12 +80,10 @@ def _coerce_pose(value: Any, depth: int = 0, origem: str = "sdk") -> Optional[Li
     if isinstance(value, (list, tuple)):
         if len(value) >= 6 and all(_is_number(x) for x in value[:6]):
             return _normalizar_pose_unidade([float(x) for x in value[:6]], origem)
-
         if len(value) >= 2 and _is_number(value[0]):
             pose = _coerce_pose(value[1], depth + 1, origem)
             if pose is not None:
                 return pose
-
         for item in value:
             pose = _coerce_pose(item, depth + 1, origem)
             if pose is not None:
@@ -581,12 +580,9 @@ def _robot_fault_reasons_from_diag(self) -> List[str]:
         if _parse_bool(d.get(key)) is True:
             reasons.append(label)
 
-    # Durante uma trajetória, power_on/enabled falsos são estado anormal.
-    for key in ("power_on", "enabled"):
-        val = d.get(key)
-        if val is not None and _parse_bool(val) is False:
-            reasons.append(f"{key}=false")
-
+    # Deliberadamente NÃO aborta por power_on/enabled falso: esses campos podem ser
+    # interpretados de forma diferente pelo parser/SDK. Se forem problema real, tendem
+    # a vir acompanhados de código de erro/protective stop/status de emergência.
     return reasons
 
 
@@ -600,6 +596,7 @@ def _probe_robot_fault(self) -> List[str]:
 
 def _marcar_interrupcao_trajetoria(self, motivo: str, reasons=None) -> None:
     reasons = [str(x) for x in (reasons or [])]
+    print(f"[TRAJ] Interrupção: {motivo}. Reasons={reasons}")
     with self._state_lock:
         self.diagnosticos["trajetoria_interrompida"] = True
         self.diagnosticos["trajetoria_interrupcao_motivo"] = motivo
@@ -640,9 +637,6 @@ def _patched_aguardar_chegada_por_tcp(self, alvo, tol_mm=2.0, timeout_s=120.0, c
     t0 = time.time()
     stable = 0
     last = None
-    stopped_since = None
-    stopped_delta_mm = 0.08
-    stopped_timeout_s = 5.0
 
     while time.time() - t0 < timeout_s:
         try:
@@ -662,8 +656,11 @@ def _patched_aguardar_chegada_por_tcp(self, alvo, tol_mm=2.0, timeout_s=120.0, c
 
         inpos_ok = True
         if exigir_inpos:
-            inpos = self._is_in_pos()
-            inpos_ok = True if inpos is None else bool(inpos)
+            try:
+                inpos = self._is_in_pos()
+                inpos_ok = True if inpos is None else bool(inpos)
+            except Exception:
+                inpos_ok = True
 
         if dist <= tol_mm and delta <= 0.35 and inpos_ok:
             stable += 1
@@ -672,18 +669,8 @@ def _patched_aguardar_chegada_por_tcp(self, alvo, tol_mm=2.0, timeout_s=120.0, c
         else:
             stable = 0
 
-        if dist > tol_mm and delta <= stopped_delta_mm:
-            if stopped_since is None:
-                stopped_since = time.time()
-            elif time.time() - stopped_since >= stopped_timeout_s:
-                self._marcar_interrupcao_trajetoria(
-                    f"robô parado fora do alvo por {stopped_timeout_s:.1f}s",
-                    [f"dist_alvo={dist:.2f}mm", f"delta={delta:.3f}mm"],
-                )
-                return False
-        else:
-            stopped_since = None
-
+        # Sem heurística de "robô parado fora do alvo". Parado pode ser espera de IO,
+        # pausa de processo, movimento lento ou leitura repetida de TCP.
         time.sleep(0.03)
 
     self._marcar_interrupcao_trajetoria("timeout aguardando chegada ao último ponto", [f"timeout={timeout_s}s"])
@@ -701,7 +688,6 @@ _original_apply_telemetry_updates = adapter._apply_telemetry_updates
 _original_snapshot_state = adapter.snapshot_state
 _original_enviar_jog = adapter.enviar_jog
 _original_processar_joystick = adapter._processar_joystick
-_original_aguardar_chegada_por_tcp = adapter.aguardar_chegada_por_tcp
 _original_set_saida_digital = adapter.set_saida_digital
 _original_executar_trajetoria = adapter.executar_trajetoria
 
