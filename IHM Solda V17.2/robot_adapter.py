@@ -7,8 +7,9 @@
 # - telemetria não sobrescreve o TCP oficial usado para pontos;
 # - workspace orientado por P1/P2 + base do robô;
 # - joystick ignorado durante trajetória, sem mandar jog_stop;
+# - watchdog de colisão/parada em alta frequência para forçar solda OFF;
 # - saída digital de solda bloqueada e forçada OFF fora de trajetória;
-# - saída digital de solda forçada OFF em falha real durante trajetória, incluindo colisão;
+# - jog com soft-start para toque curto não virar deslocamento gigante;
 # - trajetória não aborta por "robô parado".
 
 from pathlib import Path
@@ -19,7 +20,7 @@ import math
 import copy
 import threading
 from types import MethodType
-from typing import Any, Optional, List, Dict, Tuple
+from typing import Any, Optional, List, Dict
 
 _REAL_DIR = Path(__file__).resolve().parents[1] / "Programas de Robôs" / "JAKA" / "Solda"
 _REAL_FILE = _REAL_DIR / "robot_adapter.py"
@@ -550,7 +551,7 @@ def _truthy_fault_value(v: Any) -> bool:
 
 _COLLISION_KEYWORDS = (
     "collision", "collide", "collided", "colisao", "colisão",
-    "collision_stop", "collision_status", "collision_detected",
+    "collisiondetected", "collision_detected", "collision_status", "collision_stop",
     "is_collision", "in_collision", "collision_state",
 )
 
@@ -561,32 +562,16 @@ def _scan_collision_keys(value: Any, path: str = "status", depth: int = 0) -> Li
     reasons: List[str] = []
     if isinstance(value, dict):
         for key, val in value.items():
-            key_s = str(key).lower()
+            key_s = str(key).lower().replace("_", "")
             child_path = f"{path}.{key}"
-            if any(k in key_s for k in _COLLISION_KEYWORDS) and _truthy_fault_value(val):
-                reasons.append(f"{child_path}={repr(val)[:80]}")
+            if any(k.replace("_", "") in key_s for k in _COLLISION_KEYWORDS) and _truthy_fault_value(val):
+                reasons.append(f"{child_path}={repr(val)[:120]}")
             reasons.extend(_scan_collision_keys(val, child_path, depth + 1))
     elif isinstance(value, (list, tuple)):
-        for i, item in enumerate(value[:80]):
+        for i, item in enumerate(value[:120]):
             reasons.extend(_scan_collision_keys(item, f"{path}[{i}]", depth + 1))
-    return reasons
-
-
-def _extract_collision_from_raw_status(raw: Any) -> List[str]:
-    reasons: List[str] = []
-    reasons.extend(_scan_collision_keys(raw, "robot_status"))
-
-    # Fallback defensivo para formato lista da JAKA. Em algumas versões o status de
-    # colisão vem como flag posicional, sem nome. Mantemos poucos índices candidatos
-    # para não transformar qualquer contador/temperatura em colisão.
-    try:
-        if isinstance(raw, (list, tuple)) and len(raw) >= 2 and isinstance(raw[1], (list, tuple)):
-            status = raw[1]
-            for idx in (6, 7):
-                if len(status) > idx and _truthy_fault_value(status[idx]):
-                    reasons.append(f"status[{idx}] collision-candidate={status[idx]}")
-    except Exception:
-        pass
+    elif hasattr(value, "__dict__"):
+        reasons.extend(_scan_collision_keys(vars(value), path, depth + 1))
     return reasons
 
 
@@ -595,7 +580,8 @@ def _probe_collision_methods(self) -> List[str]:
     if robot is None:
         return []
     reasons: List[str] = []
-    method_names = (
+
+    explicit = {
         "is_collision",
         "is_in_collision",
         "is_collision_detected",
@@ -603,21 +589,30 @@ def _probe_collision_methods(self) -> List[str]:
         "get_collision_state",
         "get_collision_detected",
         "get_collision_protect_status",
-    )
-    for name in method_names:
+    }
+    try:
+        dynamic = {
+            name for name in dir(robot)
+            if ("collis" in name.lower() or "collision" in name.lower())
+            and not name.startswith("set_")
+            and not name.startswith("clear")
+        }
+    except Exception:
+        dynamic = set()
+
+    for name in sorted(explicit | dynamic):
         fn = getattr(robot, name, None)
         if not callable(fn):
             continue
         try:
             ret = fn()
             if _truthy_fault_value(ret):
-                reasons.append(f"{name}()={repr(ret)[:120]}")
+                reasons.append(f"{name}()={repr(ret)[:180]}")
         except TypeError:
             continue
         except Exception as e:
-            # Em trajetória, falha ao consultar método explícito de colisão não deve
-            # mascarar uma condição perigosa; só logamos para diagnóstico.
-            reasons.append(f"{name}() erro={e}")
+            with self._state_lock:
+                self.diagnosticos.setdefault("collision_method_errors", {})[name] = str(e)
     return reasons
 
 
@@ -630,24 +625,24 @@ def _robot_status_updates(self) -> Dict[str, Any]:
     except Exception:
         return {"driver_sem_robo": True}
 
+    updates: Dict[str, Any] = {}
     try:
         raw = self.driver.get_robot_status()
-        updates: Dict[str, Any] = {}
         if isinstance(raw, (list, tuple)) and len(raw) > 0 and raw[0] != 0:
             updates["robot_status_bad_ret"] = True
             updates["robot_status_retcode"] = raw[0]
         parsed, debug = _REAL_MOD.TelemetryParser.parse_robot_status(raw)
         updates.update(dict(parsed or {}))
 
-        collision_reasons = _extract_collision_from_raw_status(raw)
+        collision_reasons = _scan_collision_keys(raw, "robot_status")
         collision_reasons.extend(_probe_collision_methods(self))
         if collision_reasons:
             updates["collision_detected"] = True
-            updates["collision_reasons"] = collision_reasons[:12]
+            updates["collision_reasons"] = collision_reasons[:16]
 
         with self._state_lock:
-            self.diagnosticos["robot_status_raw_preview"] = repr(raw)[:700]
-            self.diagnosticos["robot_status_collision_scan"] = collision_reasons[:12]
+            self.diagnosticos["robot_status_raw_preview"] = repr(raw)[:900]
+            self.diagnosticos["robot_status_collision_scan"] = collision_reasons[:16]
         return updates
     except Exception as e:
         with self._state_lock:
@@ -694,40 +689,18 @@ def _probe_robot_fault(self) -> List[str]:
     return self._robot_fault_reasons_from_diag()
 
 
-def _marcar_interrupcao_trajetoria(self, motivo: str, reasons=None) -> None:
-    reasons = [str(x) for x in (reasons or [])]
-    print(f"[TRAJ] Interrupção: {motivo}. Reasons={reasons}")
-    with self._state_lock:
-        self.diagnosticos["trajetoria_interrompida"] = True
-        self.diagnosticos["trajetoria_interrupcao_motivo"] = motivo
-        self.diagnosticos["trajetoria_interrupcao_reasons"] = reasons
-        self.diagnosticos["trajetoria_interrupcao_ts"] = time.time()
-    try:
-        # Usa o comando bruto para evitar a guarda de set_saida_digital(True/False).
-        _original_set_saida_digital(False, confirmar=False)
-        with self._state_lock:
-            self.diagnosticos["solda_forcada_off_em_falha"] = True
-            self.diagnosticos["solda_forcada_off_em_falha_ts"] = time.time()
-    except Exception as e:
-        with self._state_lock:
-            self.diagnosticos["falha_desligando_solda_em_interrupcao"] = str(e)
-        print(f"[SEGURANÇA] Falha desligando solda em interrupção: {e}")
-
-
-def _forcar_saida_solda_off_fora_de_trajetoria(self, origem="watchdog") -> bool:
-    if getattr(self, "executando_trajetoria", False):
-        return False
-
+def _force_weld_off_raw(self, origem="raw", throttle_s: Optional[float] = None) -> bool:
     now = time.time()
-    last = float(getattr(self, "_weld_safety_last_force_off_ts", 0.0) or 0.0)
-    if now - last < 0.25:
-        return False
-    self._weld_safety_last_force_off_ts = now
-
+    if throttle_s is not None:
+        last = float(getattr(self, "_weld_safety_last_force_off_ts", 0.0) or 0.0)
+        if now - last < throttle_s:
+            return False
+        self._weld_safety_last_force_off_ts = now
     try:
         ok = _original_set_saida_digital(False, confirmar=False)
         with self._state_lock:
-            self.diagnosticos["solda_forcada_off_fora_trajetoria"] = True
+            self.saida_digital_ativa = False
+            self.diagnosticos["saida_digital_ativa"] = False
             self.diagnosticos["solda_forcada_off_origem"] = origem
             self.diagnosticos["solda_forcada_off_ts"] = now
         return bool(ok)
@@ -736,8 +709,56 @@ def _forcar_saida_solda_off_fora_de_trajetoria(self, origem="watchdog") -> bool:
             self.diagnosticos["solda_forcada_off_erro"] = str(e)
             self.diagnosticos["solda_forcada_off_origem"] = origem
             self.diagnosticos["solda_forcada_off_ts"] = now
-        print(f"[SEGURANÇA] Falha forçando solda OFF fora de trajetória: {e}")
+        print(f"[SEGURANÇA] Falha forçando solda OFF ({origem}): {e}")
         return False
+
+
+def _forcar_saida_solda_off_fora_de_trajetoria(self, origem="watchdog") -> bool:
+    if getattr(self, "executando_trajetoria", False):
+        return False
+    return self._force_weld_off_raw(origem, throttle_s=0.25)
+
+
+def _marcar_interrupcao_trajetoria(self, motivo: str, reasons=None) -> None:
+    reasons = [str(x) for x in (reasons or [])]
+    print(f"[TRAJ] Interrupção: {motivo}. Reasons={reasons}")
+    with self._state_lock:
+        self.diagnosticos["trajetoria_interrompida"] = True
+        self.diagnosticos["trajetoria_interrupcao_motivo"] = motivo
+        self.diagnosticos["trajetoria_interrupcao_reasons"] = reasons
+        self.diagnosticos["trajetoria_interrupcao_ts"] = time.time()
+        self.executando_trajetoria = False
+        self.diagnosticos["executando_trajetoria"] = False
+    self._force_weld_off_raw("falha_trajetoria", throttle_s=None)
+    try:
+        self.definir_erro_trajetoria([f"{motivo}: " + "; ".join(reasons[:4])])
+    except Exception:
+        pass
+
+
+def _trajectory_fault_watchdog_loop(self):
+    while True:
+        try:
+            if getattr(self, "executando_trajetoria", False):
+                reasons = self._probe_robot_fault()
+                if reasons:
+                    self._marcar_interrupcao_trajetoria("falha/parada detectada pelo watchdog de trajetória", reasons)
+            else:
+                self._forcar_saida_solda_off_fora_de_trajetoria("traj_fault_watchdog_idle")
+        except Exception as e:
+            with self._state_lock:
+                self.diagnosticos["traj_fault_watchdog_error"] = str(e)
+        time.sleep(0.05)
+
+
+def _start_trajectory_fault_watchdog(self):
+    th = getattr(self, "_traj_fault_watchdog_thread", None)
+    if th is not None and th.is_alive():
+        return
+    th = threading.Thread(target=lambda: self._trajectory_fault_watchdog_loop(), daemon=True)
+    self._traj_fault_watchdog_thread = th
+    th.start()
+    print("[SEGURANÇA] Watchdog de colisão/trajetória iniciado (50 ms).")
 
 
 def _consumir_botoes_joystick(self, joy) -> None:
@@ -823,6 +844,10 @@ adapter.workspace = _workspace_default()
 adapter._workspace_stop_emitido = False
 adapter._traj_joystick_block_log_emitido = False
 adapter._weld_safety_last_force_off_ts = 0.0
+adapter._traj_fault_watchdog_thread = None
+adapter._jog_soft_group = None
+adapter._jog_soft_since = 0.0
+adapter._jog_soft_eixo_ts = {0: 0.0, 1: 0.0, 2: 0.0, 3: 0.0, 4: 0.0, 5: 0.0}
 
 
 def _patched_snapshot_state(self):
@@ -863,6 +888,7 @@ def _patched_conectar(self, ip="192.168.0.200"):
             time.sleep(0.08)
         self._probe_robot_fault()
         self._forcar_saida_solda_off_fora_de_trajetoria("connect")
+        self._start_trajectory_fault_watchdog()
         if self.on_state_update:
             self.on_state_update(self.snapshot_state())
     return ok
@@ -916,6 +942,25 @@ def _patched_update_telemetry_low_freq(self):
     return result
 
 
+def _jog_soft_start_factor(self, eixo: int, vel: float) -> float:
+    if abs(float(vel)) < getattr(self, "DEADZONE", 0.2):
+        return 1.0
+    now = time.time()
+    grupo = getattr(self, "grupo_ativo", None) or f"EIXO_{eixo}"
+    if self._jog_soft_group != grupo:
+        self._jog_soft_group = grupo
+        self._jog_soft_since = now
+        self._jog_soft_eixo_ts = {0: 0.0, 1: 0.0, 2: 0.0, 3: 0.0, 4: 0.0, 5: 0.0}
+    self._jog_soft_eixo_ts[int(eixo)] = now
+
+    elapsed = max(0.0, now - float(self._jog_soft_since or now))
+    if elapsed < 0.22:
+        return 0.12
+    if elapsed < 0.85:
+        return 0.12 + ((elapsed - 0.22) / 0.63) * 0.88
+    return 1.0
+
+
 def _patched_enviar_jog(self, eixo, vel, coord):
     if getattr(self, "executando_trajetoria", False):
         self._bloquear_joystick_por_trajetoria()
@@ -923,8 +968,13 @@ def _patched_enviar_jog(self, eixo, vel, coord):
     self._traj_joystick_block_log_emitido = False
     with self._state_lock:
         self.diagnosticos["joystick_bloqueado_por_trajetoria"] = False
+
     self._forcar_saida_solda_off_fora_de_trajetoria("antes_jog")
     vel_filtrada = self._limitar_velocidade_workspace(int(eixo), float(vel))
+    factor = self._jog_soft_start_factor(int(eixo), vel_filtrada)
+    vel_filtrada = float(vel_filtrada) * factor
+    with self._state_lock:
+        self.diagnosticos["jog_soft_start_factor"] = round(float(factor), 3)
     return _original_enviar_jog(eixo, vel_filtrada, coord)
 
 
@@ -936,7 +986,11 @@ def _patched_processar_joystick(self, joy):
     with self._state_lock:
         self.diagnosticos["joystick_bloqueado_por_trajetoria"] = False
     self._forcar_saida_solda_off_fora_de_trajetoria("joystick_idle")
-    return _original_processar_joystick(joy)
+    result = _original_processar_joystick(joy)
+    if getattr(self, "grupo_ativo", None) is None:
+        self._jog_soft_group = None
+        self._jog_soft_since = 0.0
+    return result
 
 
 def _patched_executar_trajetoria(self) -> str:
@@ -949,6 +1003,8 @@ def _patched_executar_trajetoria(self) -> str:
         self.diagnosticos["collision_detected"] = False
         self.diagnosticos["collision_reasons"] = []
 
+    self._start_trajectory_fault_watchdog()
+
     try:
         if getattr(self, "grupo_ativo", None) is not None:
             self.parar_grupo([0, 1, 2, 3, 4, 5])
@@ -959,11 +1015,7 @@ def _patched_executar_trajetoria(self) -> str:
     try:
         return _original_executar_trajetoria()
     finally:
-        try:
-            _original_set_saida_digital(False, confirmar=False)
-        except Exception as e:
-            with self._state_lock:
-                self.diagnosticos["falha_desligando_solda_finalmente"] = str(e)
+        self._force_weld_off_raw("fim_trajetoria", throttle_s=None)
         self._traj_joystick_block_log_emitido = False
         with self._state_lock:
             self.diagnosticos["joystick_bloqueado_por_trajetoria"] = False
@@ -980,6 +1032,8 @@ def _patched_iniciar_loop_controle(self):
     except Exception:
         joy = None
         print("[JOYSTICK] Nenhum controle encontrado.")
+
+    self._start_trajectory_fault_watchdog()
 
     def loop():
         nonlocal joy
@@ -1038,10 +1092,14 @@ adapter._limitar_velocidade_workspace = MethodType(_limitar_velocidade_workspace
 adapter._robot_status_updates = MethodType(_robot_status_updates, adapter)
 adapter._robot_fault_reasons_from_diag = MethodType(_robot_fault_reasons_from_diag, adapter)
 adapter._probe_robot_fault = MethodType(_probe_robot_fault, adapter)
+adapter._force_weld_off_raw = MethodType(_force_weld_off_raw, adapter)
 adapter._marcar_interrupcao_trajetoria = MethodType(_marcar_interrupcao_trajetoria, adapter)
 adapter._forcar_saida_solda_off_fora_de_trajetoria = MethodType(_forcar_saida_solda_off_fora_de_trajetoria, adapter)
+adapter._trajectory_fault_watchdog_loop = MethodType(_trajectory_fault_watchdog_loop, adapter)
+adapter._start_trajectory_fault_watchdog = MethodType(_start_trajectory_fault_watchdog, adapter)
 adapter._consumir_botoes_joystick = MethodType(_consumir_botoes_joystick, adapter)
 adapter._bloquear_joystick_por_trajetoria = MethodType(_bloquear_joystick_por_trajetoria, adapter)
+adapter._jog_soft_start_factor = MethodType(_jog_soft_start_factor, adapter)
 adapter.snapshot_state = MethodType(_patched_snapshot_state, adapter)
 adapter._apply_telemetry_updates = MethodType(_patched_apply_telemetry_updates, adapter)
 adapter.conectar = MethodType(_patched_conectar, adapter)
