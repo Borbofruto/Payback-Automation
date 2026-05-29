@@ -8,6 +8,7 @@
 # - workspace orientado por P1/P2 + base do robô;
 # - joystick ignorado durante trajetória, sem mandar jog_stop;
 # - saída digital de solda bloqueada e forçada OFF fora de trajetória;
+# - saída digital de solda forçada OFF em falha real durante trajetória, incluindo colisão;
 # - trajetória não aborta por "robô parado".
 
 from pathlib import Path
@@ -18,7 +19,7 @@ import math
 import copy
 import threading
 from types import MethodType
-from typing import Any, Optional, List, Dict
+from typing import Any, Optional, List, Dict, Tuple
 
 _REAL_DIR = Path(__file__).resolve().parents[1] / "Programas de Robôs" / "JAKA" / "Solda"
 _REAL_FILE = _REAL_DIR / "robot_adapter.py"
@@ -516,7 +517,7 @@ def _amostrar_tcp_estavel_para_ponto(self) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# Segurança de trajetória / solda
+# Segurança de trajetória / solda / colisão
 # ---------------------------------------------------------------------------
 
 def _parse_bool(v):
@@ -526,6 +527,98 @@ def _parse_bool(v):
         return bool(int(v))
     except Exception:
         return bool(v)
+
+
+def _truthy_fault_value(v: Any) -> bool:
+    if v is None:
+        return False
+    if isinstance(v, bool):
+        return v
+    if isinstance(v, (int, float)):
+        return abs(float(v)) > 1e-9
+    if isinstance(v, str):
+        s = v.strip().lower()
+        return s not in ("", "0", "false", "none", "normal", "ok", "no", "off")
+    if isinstance(v, (list, tuple)):
+        if len(v) >= 2 and isinstance(v[0], (int, float)) and int(v[0]) == 0:
+            return _truthy_fault_value(v[1])
+        return any(_truthy_fault_value(x) for x in v)
+    if isinstance(v, dict):
+        return any(_truthy_fault_value(x) for x in v.values())
+    return bool(v)
+
+
+_COLLISION_KEYWORDS = (
+    "collision", "collide", "collided", "colisao", "colisão",
+    "collision_stop", "collision_status", "collision_detected",
+    "is_collision", "in_collision", "collision_state",
+)
+
+
+def _scan_collision_keys(value: Any, path: str = "status", depth: int = 0) -> List[str]:
+    if value is None or depth > 5:
+        return []
+    reasons: List[str] = []
+    if isinstance(value, dict):
+        for key, val in value.items():
+            key_s = str(key).lower()
+            child_path = f"{path}.{key}"
+            if any(k in key_s for k in _COLLISION_KEYWORDS) and _truthy_fault_value(val):
+                reasons.append(f"{child_path}={repr(val)[:80]}")
+            reasons.extend(_scan_collision_keys(val, child_path, depth + 1))
+    elif isinstance(value, (list, tuple)):
+        for i, item in enumerate(value[:80]):
+            reasons.extend(_scan_collision_keys(item, f"{path}[{i}]", depth + 1))
+    return reasons
+
+
+def _extract_collision_from_raw_status(raw: Any) -> List[str]:
+    reasons: List[str] = []
+    reasons.extend(_scan_collision_keys(raw, "robot_status"))
+
+    # Fallback defensivo para formato lista da JAKA. Em algumas versões o status de
+    # colisão vem como flag posicional, sem nome. Mantemos poucos índices candidatos
+    # para não transformar qualquer contador/temperatura em colisão.
+    try:
+        if isinstance(raw, (list, tuple)) and len(raw) >= 2 and isinstance(raw[1], (list, tuple)):
+            status = raw[1]
+            for idx in (6, 7):
+                if len(status) > idx and _truthy_fault_value(status[idx]):
+                    reasons.append(f"status[{idx}] collision-candidate={status[idx]}")
+    except Exception:
+        pass
+    return reasons
+
+
+def _probe_collision_methods(self) -> List[str]:
+    robot = getattr(getattr(self, "driver", None), "robot", None)
+    if robot is None:
+        return []
+    reasons: List[str] = []
+    method_names = (
+        "is_collision",
+        "is_in_collision",
+        "is_collision_detected",
+        "get_collision_status",
+        "get_collision_state",
+        "get_collision_detected",
+        "get_collision_protect_status",
+    )
+    for name in method_names:
+        fn = getattr(robot, name, None)
+        if not callable(fn):
+            continue
+        try:
+            ret = fn()
+            if _truthy_fault_value(ret):
+                reasons.append(f"{name}()={repr(ret)[:120]}")
+        except TypeError:
+            continue
+        except Exception as e:
+            # Em trajetória, falha ao consultar método explícito de colisão não deve
+            # mascarar uma condição perigosa; só logamos para diagnóstico.
+            reasons.append(f"{name}() erro={e}")
+    return reasons
 
 
 def _robot_status_updates(self) -> Dict[str, Any]:
@@ -539,15 +632,27 @@ def _robot_status_updates(self) -> Dict[str, Any]:
 
     try:
         raw = self.driver.get_robot_status()
-        updates, debug = _REAL_MOD.TelemetryParser.parse_robot_status(raw)
-        self._apply_telemetry_updates(dict(updates), debug)
+        updates: Dict[str, Any] = {}
+        if isinstance(raw, (list, tuple)) and len(raw) > 0 and raw[0] != 0:
+            updates["robot_status_bad_ret"] = True
+            updates["robot_status_retcode"] = raw[0]
+        parsed, debug = _REAL_MOD.TelemetryParser.parse_robot_status(raw)
+        updates.update(dict(parsed or {}))
+
+        collision_reasons = _extract_collision_from_raw_status(raw)
+        collision_reasons.extend(_probe_collision_methods(self))
+        if collision_reasons:
+            updates["collision_detected"] = True
+            updates["collision_reasons"] = collision_reasons[:12]
+
         with self._state_lock:
-            self.diagnosticos["robot_status_raw_preview"] = repr(raw)[:500]
-        return dict(updates or {})
+            self.diagnosticos["robot_status_raw_preview"] = repr(raw)[:700]
+            self.diagnosticos["robot_status_collision_scan"] = collision_reasons[:12]
+        return updates
     except Exception as e:
         with self._state_lock:
             self.diagnosticos["robot_status_probe_error"] = str(e)
-        return {}
+        return {"robot_status_probe_failed": True, "robot_status_probe_error": str(e)}
 
 
 def _robot_fault_reasons_from_diag(self) -> List[str]:
@@ -566,9 +671,18 @@ def _robot_fault_reasons_from_diag(self) -> List[str]:
         ("status_emergencia", "emergência"),
         ("protective_stop", "protective_stop"),
         ("driver_sem_robo", "driver_sem_robo"),
+        ("robot_status_bad_ret", "robot_status_bad_ret"),
+        ("robot_status_probe_failed", "robot_status_probe_failed"),
+        ("collision_detected", "collision_detected"),
+        ("collision_status", "collision_status"),
+        ("collision_stop", "collision_stop"),
     ):
         if _parse_bool(d.get(key)) is True:
             reasons.append(label)
+
+    collision_reasons = d.get("collision_reasons") or d.get("robot_status_collision_scan")
+    if collision_reasons:
+        reasons.append(f"collision_reasons={collision_reasons}")
     return reasons
 
 
@@ -589,20 +703,18 @@ def _marcar_interrupcao_trajetoria(self, motivo: str, reasons=None) -> None:
         self.diagnosticos["trajetoria_interrupcao_reasons"] = reasons
         self.diagnosticos["trajetoria_interrupcao_ts"] = time.time()
     try:
-        self.set_saida_digital(False, confirmar=False)
+        # Usa o comando bruto para evitar a guarda de set_saida_digital(True/False).
+        _original_set_saida_digital(False, confirmar=False)
+        with self._state_lock:
+            self.diagnosticos["solda_forcada_off_em_falha"] = True
+            self.diagnosticos["solda_forcada_off_em_falha_ts"] = time.time()
     except Exception as e:
         with self._state_lock:
             self.diagnosticos["falha_desligando_solda_em_interrupcao"] = str(e)
+        print(f"[SEGURANÇA] Falha desligando solda em interrupção: {e}")
 
 
 def _forcar_saida_solda_off_fora_de_trajetoria(self, origem="watchdog") -> bool:
-    """Camada de segurança ativa.
-
-    Se o estado da IHM diz que NÃO há trajetória em execução, a saída física de solda
-    é forçada para OFF de forma periódica, mesmo que o estado interno diga que já está
-    desligada. Isso cobre saída ligada por chamada anterior, estado interno defasado
-    ou acionamento externo pela controladora.
-    """
     if getattr(self, "executando_trajetoria", False):
         return False
 
@@ -637,8 +749,6 @@ def _consumir_botoes_joystick(self, joy) -> None:
 
 
 def _bloquear_joystick_por_trajetoria(self, joy=None) -> None:
-    # Durante trajetória o joystick é ignorado. Não manda jog_stop/parar_grupo,
-    # porque isso interrompe MoveL/MoveC em andamento.
     self.grupo_ativo = None
     if not getattr(self, "_traj_joystick_block_log_emitido", False):
         self._traj_joystick_block_log_emitido = True
@@ -725,6 +835,8 @@ def _patched_snapshot_state(self):
         "trajetoria_interrupcao_motivo": self.diagnosticos.get("trajetoria_interrupcao_motivo", ""),
         "solda_saida_digital_ativa": bool(getattr(self, "saida_digital_ativa", False)),
         "solda_forcada_off_fora_trajetoria": bool(self.diagnosticos.get("solda_forcada_off_fora_trajetoria", False)),
+        "collision_detected": bool(self.diagnosticos.get("collision_detected", False)),
+        "collision_reasons": self.diagnosticos.get("collision_reasons", []),
     }
     return dados
 
@@ -791,7 +903,7 @@ def _patched_update_telemetry_low_freq(self):
     try:
         if getattr(self, "executando_trajetoria", False):
             fault_reasons = self._probe_robot_fault()
-            if fault_reasons and getattr(self, "saida_digital_ativa", False):
+            if fault_reasons:
                 self._marcar_interrupcao_trajetoria("status de falha/parada do robô", fault_reasons)
         else:
             self._forcar_saida_solda_off_fora_de_trajetoria("telemetry_low_freq")
@@ -834,9 +946,9 @@ def _patched_executar_trajetoria(self) -> str:
         self.diagnosticos["trajetoria_interrupcao_reasons"] = []
         self.diagnosticos["joystick_bloqueado_por_trajetoria"] = False
         self.diagnosticos["solda_bloqueada_fora_de_trajetoria"] = False
+        self.diagnosticos["collision_detected"] = False
+        self.diagnosticos["collision_reasons"] = []
 
-    # Se havia jog manual ativo, para antes de entregar controle à trajetória.
-    # Durante a trajetória, o joystick passa a ser ignorado sem mandar stop.
     try:
         if getattr(self, "grupo_ativo", None) is not None:
             self.parar_grupo([0, 1, 2, 3, 4, 5])
@@ -887,7 +999,6 @@ def _patched_iniciar_loop_controle(self):
                     self._contador_telemetria = 0
                     self._update_telemetry_low_freq()
 
-                # Watchdog de solda: se não há trajetória, DO de solda fica OFF.
                 if not getattr(self, "executando_trajetoria", False):
                     self._forcar_saida_solda_off_fora_de_trajetoria("loop")
 
