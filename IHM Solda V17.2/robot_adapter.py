@@ -9,7 +9,7 @@
 # - joystick ignorado durante trajetória, sem mandar jog_stop;
 # - watchdog de colisão/parada em alta frequência para forçar solda OFF;
 # - saída digital de solda bloqueada e forçada OFF fora de trajetória;
-# - jog com soft-start para toque curto não virar deslocamento gigante;
+# - jog linear padrão 50 mm/s, sem rampa de aceleração;
 # - RZ do joystick usa rotação em coordenada de ferramenta/TCP, não J6 puro;
 # - deslocamento TCP calibrável aqui no código, sem expor ao operador na IHM;
 # - trajetória não aborta por "robô parado".
@@ -940,9 +940,6 @@ adapter._workspace_stop_emitido = False
 adapter._traj_joystick_block_log_emitido = False
 adapter._weld_safety_last_force_off_ts = 0.0
 adapter._traj_fault_watchdog_thread = None
-adapter._jog_soft_group = None
-adapter._jog_soft_since = 0.0
-adapter._jog_soft_eixo_ts = {0: 0.0, 1: 0.0, 2: 0.0, 3: 0.0, 4: 0.0, 5: 0.0}
 adapter._tcp_tool_calibration_applied = False
 
 
@@ -1043,21 +1040,7 @@ def _patched_update_telemetry_low_freq(self):
 
 
 def _jog_soft_start_factor(self, eixo: int, vel: float) -> float:
-    if abs(float(vel)) < getattr(self, "DEADZONE", 0.2):
-        return 1.0
-    now = time.time()
-    grupo = getattr(self, "grupo_ativo", None) or f"EIXO_{eixo}"
-    if self._jog_soft_group != grupo:
-        self._jog_soft_group = grupo
-        self._jog_soft_since = now
-        self._jog_soft_eixo_ts = {0: 0.0, 1: 0.0, 2: 0.0, 3: 0.0, 4: 0.0, 5: 0.0}
-    self._jog_soft_eixo_ts[int(eixo)] = now
-
-    elapsed = max(0.0, now - float(self._jog_soft_since or now))
-    if elapsed < 0.22:
-        return 0.12
-    if elapsed < 0.85:
-        return 0.12 + ((elapsed - 0.22) / 0.63) * 0.88
+    # Rampa removida: jog volta a responder de forma linear e previsível.
     return 1.0
 
 
@@ -1095,11 +1078,7 @@ def _patched_processar_joystick(self, joy):
     with self._state_lock:
         self.diagnosticos["joystick_bloqueado_por_trajetoria"] = False
     self._forcar_saida_solda_off_fora_de_trajetoria("joystick_idle")
-    result = _original_processar_joystick(joy)
-    if getattr(self, "grupo_ativo", None) is None:
-        self._jog_soft_group = None
-        self._jog_soft_since = 0.0
-    return result
+    return _original_processar_joystick(joy)
 
 
 def _patched_executar_trajetoria(self) -> str:
