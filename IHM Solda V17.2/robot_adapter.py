@@ -10,6 +10,8 @@
 # - watchdog de colisão/parada em alta frequência para forçar solda OFF;
 # - saída digital de solda bloqueada e forçada OFF fora de trajetória;
 # - jog com soft-start para toque curto não virar deslocamento gigante;
+# - RZ do joystick usa rotação em coordenada de ferramenta/TCP, não J6 puro;
+# - deslocamento TCP calibrável aqui no código, sem expor ao operador na IHM;
 # - trajetória não aborta por "robô parado".
 
 from pathlib import Path
@@ -35,6 +37,27 @@ _SPEC.loader.exec_module(_REAL_MOD)
 
 RobotAdapter = _REAL_MOD.RobotAdapter
 adapter = _REAL_MOD.adapter
+
+# ---------------------------------------------------------------------------
+# CALIBRAÇÃO LOCAL — ajuste aqui, não na interface.
+# ---------------------------------------------------------------------------
+# Velocidade padrão do jog linear na inicialização. A tela de parâmetros ainda pode
+# alterar isso em runtime; este é só o default seguro.
+DEFAULT_JOG_LINEAR_MM_S = 50.0
+
+# Coord mode usado para rotação RZ pelos botões que antes giravam J6.
+# Na SDK JAKA usada no projeto, 1 vinha se comportando como eixo/junta; 2 é o modo
+# de ferramenta/TCP já usado para RX/RY. Se teu SDK nomear diferente, este é o
+# único ponto de calibração para testar.
+TCP_RZ_JOG_COORD_MODE = 2
+
+# Deslocamento da ferramenta em relação ao flange do robô, em mm/rad.
+# Ajuste estes 6 valores conforme a ferramenta real:
+# [X, Y, Z, RX, RY, RZ]
+# Importante: isso é calibração de máquina. Não colocar no HTML para operador.
+TCP_TOOL_OFFSET_POSE = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+TCP_TOOL_ID = 0
+TCP_TOOL_CALIBRATION_ENABLED = True
 
 _TWO_PI = math.pi * 2.0
 _DEG_THRESHOLD = _TWO_PI + 0.25
@@ -518,6 +541,77 @@ def _amostrar_tcp_estavel_para_ponto(self) -> bool:
 
 
 # ---------------------------------------------------------------------------
+# Calibração de ferramenta / rotação TCP
+# ---------------------------------------------------------------------------
+
+def _ret_ok_local(ret: Any) -> bool:
+    try:
+        return bool(getattr(adapter, "_ret_ok", lambda x: x == 0 or x is None)(ret))
+    except Exception:
+        if ret == 0 or ret is None:
+            return True
+        if isinstance(ret, (list, tuple)) and len(ret) > 0 and ret[0] == 0:
+            return True
+        return False
+
+
+def _apply_tcp_tool_calibration(self, force=False) -> bool:
+    if not TCP_TOOL_CALIBRATION_ENABLED:
+        return False
+    if getattr(self, "modo_simulacao", True):
+        return False
+    if not force and getattr(self, "_tcp_tool_calibration_applied", False):
+        return True
+
+    robot = getattr(getattr(self, "driver", None), "robot", None)
+    if robot is None:
+        return False
+
+    pose = [float(x) for x in TCP_TOOL_OFFSET_POSE[:6]]
+    attempts = (
+        ("set_tool_data", (TCP_TOOL_ID, pose)),
+        ("set_tool_data", (pose,)),
+        ("set_tool", (TCP_TOOL_ID, pose)),
+        ("set_tool", (pose,)),
+        ("set_tcp", (pose,)),
+        ("set_tool_frame", (TCP_TOOL_ID, pose)),
+        ("set_current_tool_data", (pose,)),
+        ("set_tool_id", (TCP_TOOL_ID,)),
+    )
+
+    errors = []
+    for name, args in attempts:
+        fn = getattr(robot, name, None)
+        if not callable(fn):
+            continue
+        try:
+            ret = fn(*args)
+            if _ret_ok_local(ret):
+                self._tcp_tool_calibration_applied = True
+                with self._state_lock:
+                    self.diagnosticos["tcp_tool_offset_pose"] = pose
+                    self.diagnosticos["tcp_tool_calibration_method"] = f"{name}{args}"
+                    self.diagnosticos["tcp_tool_calibration_ok"] = True
+                print(f"[TCP TOOL] Calibração aplicada por {name}: {pose}")
+                return True
+            errors.append(f"{name}{args} -> {ret}")
+        except TypeError:
+            continue
+        except Exception as e:
+            errors.append(f"{name}{args} -> {e}")
+
+    with self._state_lock:
+        self.diagnosticos["tcp_tool_offset_pose"] = pose
+        self.diagnosticos["tcp_tool_calibration_ok"] = False
+        self.diagnosticos["tcp_tool_calibration_errors"] = errors[-8:]
+    if errors:
+        print(f"[TCP TOOL] Não consegui aplicar offset TCP pela SDK. Últimos erros: {errors[-3:]}")
+    else:
+        print("[TCP TOOL] SDK sem método conhecido para aplicar offset TCP. RZ usará coord_mode de ferramenta mesmo assim.")
+    return False
+
+
+# ---------------------------------------------------------------------------
 # Segurança de trajetória / solda / colisão
 # ---------------------------------------------------------------------------
 
@@ -841,6 +935,7 @@ _original_set_saida_digital = adapter.set_saida_digital
 _original_executar_trajetoria = adapter.executar_trajetoria
 
 adapter.workspace = _workspace_default()
+adapter.MAX_SPD_LINEAR = DEFAULT_JOG_LINEAR_MM_S
 adapter._workspace_stop_emitido = False
 adapter._traj_joystick_block_log_emitido = False
 adapter._weld_safety_last_force_off_ts = 0.0
@@ -848,6 +943,7 @@ adapter._traj_fault_watchdog_thread = None
 adapter._jog_soft_group = None
 adapter._jog_soft_since = 0.0
 adapter._jog_soft_eixo_ts = {0: 0.0, 1: 0.0, 2: 0.0, 3: 0.0, 4: 0.0, 5: 0.0}
+adapter._tcp_tool_calibration_applied = False
 
 
 def _patched_snapshot_state(self):
@@ -862,6 +958,8 @@ def _patched_snapshot_state(self):
         "solda_forcada_off_fora_trajetoria": bool(self.diagnosticos.get("solda_forcada_off_fora_trajetoria", False)),
         "collision_detected": bool(self.diagnosticos.get("collision_detected", False)),
         "collision_reasons": self.diagnosticos.get("collision_reasons", []),
+        "tcp_tool_offset_pose": self.diagnosticos.get("tcp_tool_offset_pose", TCP_TOOL_OFFSET_POSE),
+        "tcp_tool_calibration_ok": bool(self.diagnosticos.get("tcp_tool_calibration_ok", False)),
     }
     return dados
 
@@ -882,6 +980,8 @@ def _patched_apply_telemetry_updates(self, updates, debug):
 def _patched_conectar(self, ip="192.168.0.200"):
     ok = _original_conectar(ip)
     if ok and not getattr(self, "modo_simulacao", True):
+        self._tcp_tool_calibration_applied = False
+        self._apply_tcp_tool_calibration(force=True)
         for _ in range(5):
             if self._refresh_tcp_from_robot("connect", aplicar_filtro=False):
                 break
@@ -973,9 +1073,18 @@ def _patched_enviar_jog(self, eixo, vel, coord):
     vel_filtrada = self._limitar_velocidade_workspace(int(eixo), float(vel))
     factor = self._jog_soft_start_factor(int(eixo), vel_filtrada)
     vel_filtrada = float(vel_filtrada) * factor
+
+    coord_final = coord
+    if int(eixo) == 5:
+        coord_final = TCP_RZ_JOG_COORD_MODE
+        self._apply_tcp_tool_calibration(force=False)
+        with self._state_lock:
+            self.diagnosticos["tcp_rz_jog_coord_mode"] = coord_final
+            self.diagnosticos["tcp_rz_jog_usa_tcp"] = True
+
     with self._state_lock:
         self.diagnosticos["jog_soft_start_factor"] = round(float(factor), 3)
-    return _original_enviar_jog(eixo, vel_filtrada, coord)
+    return _original_enviar_jog(eixo, vel_filtrada, coord_final)
 
 
 def _patched_processar_joystick(self, joy):
@@ -1089,6 +1198,7 @@ adapter.get_workspace_config = MethodType(_get_workspace_config, adapter)
 adapter.set_workspace_config = MethodType(_set_workspace_config, adapter)
 adapter.set_workspace_point_from_tcp = MethodType(_set_workspace_point_from_tcp, adapter)
 adapter._limitar_velocidade_workspace = MethodType(_limitar_velocidade_workspace, adapter)
+adapter._apply_tcp_tool_calibration = MethodType(_apply_tcp_tool_calibration, adapter)
 adapter._robot_status_updates = MethodType(_robot_status_updates, adapter)
 adapter._robot_fault_reasons_from_diag = MethodType(_robot_fault_reasons_from_diag, adapter)
 adapter._probe_robot_fault = MethodType(_probe_robot_fault, adapter)
